@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AutoShip — Showcase</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  body { background: #0a0e1a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif; }
+  button { cursor: pointer; outline: none; }
+  button:hover { filter: brightness(1.15); }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+const C = {
+  bg: "#0a0e1a", bgCard: "#111827", accent: "#6366f1",
+  green: "#22c55e", orange: "#f59e0b", red: "#ef4444",
+  cyan: "#06b6d4", pink: "#ec4899", purple: "#a855f7",
+  text: "#f1f5f9", textMuted: "#94a3b8", textDim: "#64748b",
+  border: "#1e293b",
+};
+
+const LOGO_SVG = "data:image/svg+xml," + '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none"><defs><radialGradient id="bg" cx="50%25" cy="45%25" r="55%25"><stop offset="0%25" stop-color="%231a1035"/><stop offset="100%25" stop-color="%23060610"/></radialGradient><linearGradient id="accent" x1="0%25" y1="0%25" x2="100%25" y2="100%25"><stop offset="0%25" stop-color="%237c3aed"/><stop offset="50%25" stop-color="%23c084fc"/><stop offset="100%25" stop-color="%23e879f9"/></linearGradient><filter id="outerGlow"><feGaussianBlur stdDeviation="12" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><circle cx="256" cy="256" r="248" fill="url(%23bg)" stroke="url(%23accent)" stroke-width="2.5" stroke-opacity="0.4"/><ellipse cx="256" cy="256" rx="160" ry="55" transform="rotate(-20 256 256)" stroke="url(%23accent)" stroke-width="1.8" stroke-opacity="0.25" fill="none"/><g filter="url(%23outerGlow)" transform="translate(256, 240)"><path d="M-8 50 L-25 90 Q0 75 25 90 L8 50" fill="url(%23accent)" opacity="0.5"/><path d="M-5 50 L-15 78 Q0 68 15 78 L5 50" fill="url(%23accent)" opacity="0.7"/><path d="M0 -70 Q-28 -30 -28 20 Q-28 45 -18 55 L-8 55 L-8 50 Q-20 45 -20 20 Q-20 -25 0 -55 Q20 -25 20 20 Q20 45 8 50 L8 55 L18 55 Q28 45 28 20 Q28 -30 0 -70Z" fill="url(%23accent)" stroke="%23e879f9" stroke-width="0.5" stroke-opacity="0.3"/><circle cx="0" cy="-10" r="10" fill="%23060610" stroke="%23c084fc" stroke-width="1.5"/><circle cx="0" cy="-10" r="6" fill="%231a1035" stroke="%237c3aed" stroke-width="0.8" opacity="0.8"/><path d="M-28 30 L-42 55 L-28 48 Z" fill="url(%23accent)" opacity="0.8"/><path d="M28 30 L42 55 L28 48 Z" fill="url(%23accent)" opacity="0.8"/></g></svg>';
+
+function Logo({ size = 40 }) {
+  return <img src={LOGO_SVG} alt="AutoShip" style={{ width: size, height: size, borderRadius: size * 0.25, flexShrink: 0 }} />;
+}
+
+/* ── Shared UI ──────────────────────────────────── */
+
+function Rv({ visible, delay = 0, children }) {
+  return <div style={{ opacity: 1, transform: "translateY(0)" }}>{children}</div>;
+}
+function Badge({ children, color = C.accent }) {
+  return <span style={{ display: "inline-block", padding: "3px 12px", borderRadius: 20, background: `${color}22`, color, fontSize: 12, fontWeight: 600, border: `1px solid ${color}44`, marginRight: 6, marginBottom: 4 }}>{children}</span>;
+}
+function Ttl({ children }) {
+  return <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "0 0 4px" }}><Logo size={36} /><h1 style={{ fontSize: "clamp(26px, 3vw, 40px)", fontWeight: 700, color: C.text, margin: 0, letterSpacing: "-0.5px" }}>{children}</h1></div>;
+}
+function Sub({ children }) {
+  return <p style={{ fontSize: "clamp(14px, 1.3vw, 18px)", color: C.textMuted, margin: "0 0 28px", lineHeight: 1.5 }}>{children}</p>;
+}
+function Card({ icon, title, desc, color = C.accent }) {
+  return (
+    <div style={{ padding: "14px 16px", borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}`, display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <div style={{ width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", background: `${color}18`, fontSize: 19, flexShrink: 0 }}>{icon}</div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, color, marginBottom: 2 }}>{title}</div>
+        <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{desc}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   SLIDES
+   ═══════════════════════════════════════════════════ */
+
+/* 0 ── Title ───────────────────────────────────── */
+function FloatingUSP({ label, color, x, y, delay, duration }) {
+  const [visible, setVisible] = React.useState(false);
+  React.useEffect(() => {
+    let mounted = true;
+    const loop = () => {
+      if (!mounted) return;
+      setTimeout(() => { if (mounted) setVisible(true); }, delay);
+      setTimeout(() => { if (mounted) setVisible(false); }, delay + duration);
+      setTimeout(() => { if (mounted) loop(); }, delay + duration + 400);
+    };
+    loop();
+    return () => { mounted = false; };
+  }, []);
+  return (
+    <div style={{
+      position: "absolute", left: x, top: y,
+      padding: "14px 30px", borderRadius: 16,
+      background: `${color}18`, border: `1.5px solid ${color}50`,
+      color, fontSize: 20, fontWeight: 800, letterSpacing: "0.4px",
+      opacity: visible ? 1 : 0,
+      transform: visible ? "translateY(0) scale(1)" : "translateY(18px) scale(0.92)",
+      transition: "opacity 0.7s ease, transform 0.7s ease",
+      pointerEvents: "none", whiteSpace: "nowrap",
+    }}>{label}</div>
+  );
+}
+
+function S0({ step }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", position: "relative", overflow: "hidden" }}>
+      <FloatingUSP label="Multi-Model Debate" color={C.pink} x="8%" y="18%" delay={0} duration={2800} />
+      <FloatingUSP label="Multi-Repo Orchestration" color={C.orange} x="68%" y="14%" delay={1200} duration={2800} />
+      <FloatingUSP label="Continuous Learning" color={C.green} x="72%" y="72%" delay={2400} duration={2800} />
+      <FloatingUSP label="Codebase Intelligence" color={C.cyan} x="5%" y="70%" delay={3600} duration={2800} />
+      <Logo size={110} />
+      <h1 style={{ fontSize: "clamp(44px, 5vw, 68px)", fontWeight: 800, color: C.text, margin: "14px 0 10px", letterSpacing: "-1.5px" }}>
+        Auto<span style={{ color: C.accent }}>Ship</span>
+      </h1>
+      <p style={{ fontSize: "clamp(20px, 2.2vw, 28px)", color: C.textMuted, margin: "0 0 12px" }}>Task In → PR Out</p>
+      <div style={{ height: 20 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 40, height: 40, borderRadius: "50%", background: `${C.accent}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: C.accent, fontWeight: 700 }}>W</div>
+        <div style={{ textAlign: "left" }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Waheed</div>
+          <div style={{ fontSize: 13, color: C.textDim }}>Engineering Team</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 1 ── The Problem ─────────────────────────────── */
+function S1({ step }) {
+  const pains = [
+    { label: "Pick up task", icon: "📋" },
+    { label: "Read & setup", icon: "📖" },
+    { label: "Create branch", icon: "🔀" },
+    { label: "Write code", icon: "💻" },
+    { label: "Push & PR", icon: "🚀" },
+    { label: "Wait for review", icon: "⏳" },
+    { label: "Fix comments", icon: "🔄" },
+    { label: "Repeat", icon: "♻️" },
+  ];
+  const radius = 155;
+  const centerX = 195;
+  const centerY = 175;
+  return (
+    <div>
+      <Ttl>The Problem</Ttl>
+      <Sub>Manual developer workflow is slow and repetitive</Sub>
+      <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+        <div style={{ position: "relative", width: 390, height: 370, flexShrink: 0 }}>
+          {/* Center stat */}
+          <div style={{
+            position: "absolute", left: centerX - 72, top: centerY - 60, width: 144, height: 120,
+            borderRadius: "50%", background: `linear-gradient(145deg, ${C.red}15, ${C.orange}10)`,
+            border: `2px solid ${C.red}35`, display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center", textAlign: "center", zIndex: 2,
+          }}>
+            <div style={{ fontSize: 14 }}>⏰</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: C.orange, lineHeight: 1.1 }}>~11</div>
+            <div style={{ fontSize: 11, color: C.orange, fontWeight: 600 }}>days/task</div>
+            <div style={{ fontSize: 9, color: C.textDim, marginTop: 2 }}>avg cycle time</div>
+          </div>
+          {/* Circular connecting line */}
+          <svg style={{ position: "absolute", top: 0, left: 0, width: 390, height: 370, zIndex: 0 }}>
+            <circle cx={centerX} cy={centerY} r={radius} fill="none" stroke={`${C.red}20`} strokeWidth="1.5" strokeDasharray="6 4" />
+            {pains.map((_, i) => {
+              const angle = (i / pains.length) * 2 * Math.PI - Math.PI / 2;
+              const nextAngle = ((i + 1) / pains.length) * 2 * Math.PI - Math.PI / 2;
+              const x1 = centerX + Math.cos(angle) * radius;
+              const y1 = centerY + Math.sin(angle) * radius;
+              const x2 = centerX + Math.cos(nextAngle) * radius;
+              const y2 = centerY + Math.sin(nextAngle) * radius;
+              const midAngle = (angle + nextAngle) / 2;
+              const ax = centerX + Math.cos(midAngle) * (radius + 8);
+              const ay = centerY + Math.sin(midAngle) * (radius + 8);
+              return <path key={i} d={`M${x1},${y1} Q${ax},${ay} ${x2},${y2}`} fill="none" stroke={`${C.red}30`} strokeWidth="1" />;
+            })}
+          </svg>
+          {/* Pain nodes around the circle */}
+          {pains.map((p, i) => {
+            const angle = (i / pains.length) * 2 * Math.PI - Math.PI / 2;
+            const x = centerX + Math.cos(angle) * radius;
+            const y = centerY + Math.sin(angle) * radius;
+            return (
+              <div key={i} style={{
+                position: "absolute", left: x - 44, top: y - 28, width: 88,
+                textAlign: "center", zIndex: 1,
+                opacity: 1, transition: "opacity 0.4s ease",
+              }}>
+                <div style={{
+                  width: 42, height: 42, borderRadius: "50%", margin: "0 auto 4px",
+                  background: `${C.red}15`, border: `1.5px solid ${C.red}35`,
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
+                }}>
+                  {p.icon}
+                </div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>{p.label}</div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Right side - key stats */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ padding: 16, borderRadius: 14, background: `${C.orange}0a`, border: `1px solid ${C.orange}22` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 22 }}>📊</span>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.orange }}>~11 days average cycle time</div>
+            </div>
+            <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+              Data fetched from ClickUp — last 3 sprints, excluding outliers
+            </div>
+            <Badge color={C.cyan}>ClickUp data — last 3 sprints</Badge>
+          </div>
+          <div style={{ padding: 16, borderRadius: 14, background: `${C.red}0a`, border: `1px solid ${C.red}22` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 22 }}>🔁</span>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.red }}>The Never-Ending Cycle</div>
+            </div>
+            <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+              It's not just the code — it's local setup, pulling latest code, creating branches, aligning commits, PR formatting as per GitHub repos or CI/CD rules, review back-and-forth. All repeated every time.
+            </div>
+          </div>
+          <div style={{ padding: 16, borderRadius: 14, background: `${C.purple}0a`, border: `1px solid ${C.purple}22` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 22 }}>🧠</span>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.purple }}>Context Switching Tax</div>
+            </div>
+            <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+              Developers lose focus switching between tasks, reviews, and repos — deep work time disappears
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 2 ── The Solution ────────────────────────────── */
+function S2({ step }) {
+  return (
+    <div>
+      <Ttl>The Solution: AutoShip</Ttl>
+      <Sub>Create a task → get a production-ready Pull Request. With tests, review, and learning built in.</Sub>
+      <div style={{ display: "flex", gap: 20, marginBottom: 24 }}>
+        {[
+          { icon: "📋", title: "Task In", desc: "Create a task on the board — or use the AI Task Creator to generate one from a natural language prompt", color: C.cyan },
+          { icon: "🧠", title: "AutoShip Reasons", desc: "Scores complexity, debates approach, understands the codebase, learns from past PRs", color: C.accent },
+          { icon: "🎉", title: "PR Out", desc: "Code, tests, PR, task update, Slack notification — all handled automatically", color: C.green },
+        ].map((c, i) => (
+          <Rv key={i} visible={step >= i}>
+            <div style={{ flex: 1, padding: 22, borderRadius: 14, textAlign: "center", background: C.bgCard, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 40, marginBottom: 10 }}>{c.icon}</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: c.color, marginBottom: 6 }}>{c.title}</div>
+              <div style={{ color: C.textMuted, fontSize: 14, lineHeight: 1.5 }}>{c.desc}</div>
+            </div>
+          </Rv>
+        ))}
+      </div>
+      <Rv visible={step >= 3}>
+        <div style={{ display: "flex", gap: 16, padding: "14px 20px", borderRadius: 12, background: `${C.green}0a`, border: `1px solid ${C.green}22` }}>
+          {[
+            { val: "Minutes", lbl: "Not days — task to PR", icon: "⚡" },
+            { val: "$0.50–3", lbl: "Per task in API costs", icon: "💰" },
+            { val: "50–200×", lbl: "ROI vs developer time", icon: "📈" },
+            { val: "Auto-Fix", lbl: "Handles review comments", icon: "🔄" },
+          ].map((s, i) => (
+            <div key={i} style={{ flex: 1, textAlign: "center" }}>
+              <div style={{ fontSize: 22 }}>{s.icon}</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: C.text, marginTop: 3 }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>{s.lbl}</div>
+            </div>
+          ))}
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 3 ── Triggering ──────────────────────────────── */
+function S3({ step }) {
+  return (
+    <div>
+      <Ttl>How to Trigger AutoShip</Ttl>
+      <Sub>Login at your AutoShip instance, connect integrations, and go</Sub>
+      <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+          <Rv>
+            <div style={{ padding: 16, borderRadius: 14, background: `${C.green}08`, border: `1px solid ${C.green}22` }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 10 }}>Prerequisite: Login & Connect Accounts</div>
+              <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+                Login on <strong style={{ color: C.cyan }}>your AutoShip instance</strong> with your Google account. Then integrate your ClickUp and GitHub accounts via the Integrations page (OAuth flow). Commits show YOUR name in Git history.
+              </div>
+            </div>
+          </Rv>
+          <Rv>
+            <div style={{ padding: 16, borderRadius: 14, background: C.bgCard, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.cyan, marginBottom: 12 }}>From ClickUp (Standard Flow)</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {[
+                  { label: "1. Set Repo", desc: "Select target repository", color: C.accent },
+                  { label: "2. Execution Mode → autoship", desc: "Enable automation", color: C.pink },
+                  { label: "3. Status → Backlog or Ready", desc: "Trigger status", color: C.orange },
+                  { label: "4. Assign to yourself", desc: "Connected user", color: C.green },
+                  { label: "5. Send Guidance", desc: "If any modifications or improvements required after PR", color: C.purple },
+                ].map((s, i) => (
+                  <div key={i} style={{ padding: "8px 12px", borderRadius: 8, background: `${s.color}0c`, border: `1px solid ${s.color}18` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: s.color, minWidth: 190 }}>{s.label}</div>
+                      <div style={{ fontSize: 12, color: C.textDim }}>{s.desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Rv>
+        </div>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+          <Rv>
+            <div style={{ padding: 14, borderRadius: 14, background: `${C.accent}08`, border: `1px solid ${C.accent}22`, marginBottom: 2 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Detection & Ingestion</div>
+            </div>
+          </Rv>
+          <Rv>
+            <div style={{ padding: 16, borderRadius: 14, background: C.bgCard, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 18 }}>⚡</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.cyan }}>Webhook Events</span>
+                <Badge color={C.green}>Default</Badge>
+              </div>
+              <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, paddingLeft: 32 }}>
+                ClickUp and GitHub webhooks for real-time event ingestion — task created, status changed, PR reviewed, review comments posted. Events drive the entire pipeline.
+              </div>
+            </div>
+          </Rv>
+          <Rv>
+            <div style={{ padding: 16, borderRadius: 14, background: `${C.pink}08`, border: `1px solid ${C.pink}25` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 18 }}>🤖</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.pink }}>AI Task Creator</span>
+                <Badge color={C.pink}>NEW</Badge>
+              </div>
+              <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, paddingLeft: 32 }}>
+                Type a natural-language prompt → generates a structured task → refine → select assignees and repo → toggle "Trigger Implementation" → creates the task AND starts execution in one click.
+              </div>
+            </div>
+          </Rv>
+          <Rv>
+            <div style={{ padding: 16, borderRadius: 14, background: C.bgCard, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 18 }}>🔄</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.orange }}>Poller Mode</span>
+                <Badge color={C.orange}>Fallback</Badge>
+              </div>
+              <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, paddingLeft: 32 }}>
+                Background poller scans configured lists every N seconds. Catches anything the webhook might miss — acts as a safety net.
+              </div>
+            </div>
+          </Rv>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 4 ── Execution Pipeline ──────────────────────── */
+function S4({ step }) {
+  const steps = [
+    { label: "Resolve Repo", detail: "Reads target repository, resolves GitHub path", color: C.cyan },
+    { label: "Complexity Scoring", detail: "Analyzes task — scores complexity, estimates files affected, adjusts timeout", color: C.orange },
+    { label: "Quality Check", detail: "Scores task description (0–100) across 8 criteria — rejects vague tasks", color: C.red },
+    { label: "Debate", detail: "Multiple reasoning agents evaluate approach before execution", color: C.pink },
+    { label: "Coding Plan + Diff Preview", detail: "Generates implementation plan, predicts file changes, posts for approval", color: C.accent },
+    { label: "Codebase Intelligence", detail: "Detects project type, indexes repo, injects relevant context", color: C.purple },
+    { label: "Historical Learning", detail: "Pulls lessons from past PRs — common review issues, success patterns", color: C.green },
+    { label: "Implementation", detail: "Full repo access — reads files, writes code, creates tests", color: C.accent },
+    { label: "Test Runner", detail: "Runs project tests — auto-fixes failures, retries up to N times", color: C.orange },
+    { label: "Commit, Push & PR", detail: "Stages, commits, pushes to feature branch, opens PR with full details", color: C.green },
+    { label: "Notify & Link", detail: "Updates task status, posts PR link, notifies team via Slack", color: C.cyan },
+  ];
+  return (
+    <div>
+      <Ttl>The Execution Pipeline</Ttl>
+      <Sub>11 intelligent steps — every one tracked in the dashboard</Sub>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px" }}>
+        {steps.map((s, i) => (
+          <Rv key={i} visible={step >= Math.floor(i / 2)} delay={(i % 2) * 80}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 10, background: `${s.color}0a`, border: `1px solid ${s.color}22` }}>
+              <div style={{ width: 26, height: 26, borderRadius: 7, background: `${s.color}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: s.color, flexShrink: 0 }}>{i + 1}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.label}</div>
+                <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.4 }}>{s.detail}</div>
+              </div>
+            </div>
+          </Rv>
+        ))}
+      </div>
+      <Rv visible={step >= 6}>
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: `${C.green}0a`, border: `1px solid ${C.green}22`, textAlign: "center" }}>
+          <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>Every step has duration tracking, cost breakdown, and real-time logs visible in the dashboard</span>
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 5 ── Codebase Intelligence & Learning ────────── */
+function S5({ step }) {
+  return (
+    <div>
+      <Ttl>Codebase Intelligence & Continuous Learning</Ttl>
+      <Sub>Understands your project AND gets smarter with every PR</Sub>
+      <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Intelligence</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Rv>
+              <div style={{ padding: 14, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 4 }}>Project Detection</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Auto-detects project type (Spring Boot, Kotlin, Node.js, Python, Go), build tools, frameworks, Docker configs across 200+ repos.</div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 14, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.cyan, marginBottom: 4 }}>Codebase Indexing</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Indexes controllers, services, models, routes — knows your API patterns, naming conventions, and folder structure before writing code.</div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 14, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>Context Awareness</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Reads task description, subtasks as acceptance criteria, tags, priority. Inject live guidance mid-execution to steer without restarting.</div>
+              </div>
+            </Rv>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Learning</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Rv>
+              <div style={{ padding: 14, borderRadius: 12, background: `${C.green}08`, border: `1px solid ${C.green}22` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>PR Outcomes Recorded</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {["Merged/Rejected", "Comments categorized", "Revision count", "Time to merge", "Auto-fix results"].map((t, i) => (
+                    <span key={i} style={{ padding: "3px 8px", borderRadius: 6, background: `${C.green}0c`, fontSize: 11, color: C.textMuted }}>{t}</span>
+                  ))}
+                </div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 14, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 4 }}>8 Review Categories</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}><span style={{ color: C.cyan }}>Missing Tests</span>, <span style={{ color: C.orange }}>Error Handling</span>, <span style={{ color: C.pink }}>Code Style</span>, <span style={{ color: C.red }}>Security</span>, <span style={{ color: C.green }}>Performance</span>, <span style={{ color: C.purple }}>Type Safety</span>, <span style={{ color: C.text }}>Docs</span>, <span style={{ color: C.accent }}>API Design</span></div>
+              </div>
+            </Rv>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 6 ── Multi-Repo ──────────────────────────────── */
+function S6({ step }) {
+  return (
+    <div>
+      <Ttl>Multi-Repo Orchestration</Ttl>
+      <Sub>One task — multiple repositories — multiple PRs — fully coordinated</Sub>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+        {[
+          { title: "Multi-Select Repos", desc: "Repo field supports selecting 2–3 repos on a single task — AutoShip runs the full pipeline for each", icon: "📂", color: C.accent },
+          { title: "Parallel or Sequential", desc: "Each repo gets its own branch and PR. Execution mode is configurable — run them simultaneously or in order", icon: "⚡", color: C.orange },
+        ].map((f, i) => (
+          <Rv key={i} visible={step >= i}>
+            <Card {...f} />
+          </Rv>
+        ))}
+      </div>
+      <Rv visible={step >= 4}>
+        <div style={{ padding: 14, borderRadius: 12, background: `${C.pink}0a`, border: `1px solid ${C.pink}22` }}>
+          <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, textAlign: "center" }}>
+            <span style={{ color: C.pink, fontWeight: 700 }}>Smart detection: </span>
+            If you mention "frontend and backend" or reference multiple repos in the description, AutoShip detects it and orchestrates across all of them automatically
+          </div>
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 7 ── Debate System ───────────────────────────── */
+function S7({ step }) {
+  return (
+    <div>
+      <Ttl>The Debate System</Ttl>
+      <Sub>Not just execution — critical evaluation before execution</Sub>
+      <Rv>
+        <div style={{ padding: 16, borderRadius: 14, background: `${C.pink}0a`, border: `1px solid ${C.pink}22`, marginBottom: 16 }}>
+          <div style={{ fontSize: 14, color: C.textMuted, lineHeight: 1.7 }}>
+            AutoShip uses <strong style={{ color: C.cyan }}>all models from Claude and OpenAI</strong> — the <strong style={{ color: C.pink }}>Leader</strong> decides which models to use as participants based on the task. It selects the right participants, assigns roles, runs multi-round discussions, and synthesizes all perspectives into a final execution plan. The winning plan is injected into execution. Full transcript visible in the dashboard.
+          </div>
+        </div>
+      </Rv>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 14 }}>
+        {[
+          { title: "Leader Orchestrates", desc: "Picks models from Claude & OpenAI, assigns roles (Security, Performance, Code Quality), and drives the discussion", icon: "👑", color: C.pink },
+          { title: "Multi-Round Debate", desc: "Configurable 1–5 rounds of critique and revision — deeper scrutiny for complex tasks", icon: "🔄", color: C.orange },
+          { title: "Leader Synthesizes", desc: "After debate, the leader synthesizes all perspectives into a final plan — posted for human approval", icon: "✅", color: C.green },
+        ].map((f, i) => (
+          <Rv key={i} visible={step >= i + 1}>
+            <div style={{ padding: 14, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}`, textAlign: "center" }}>
+              <div style={{ fontSize: 24, marginBottom: 6 }}>{f.icon}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: f.color, marginBottom: 4 }}>{f.title}</div>
+              <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5 }}>{f.desc}</div>
+            </div>
+          </Rv>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {[
+          { title: "Edge Cases & Assumptions", desc: "Agents probe for boundary conditions, null cases, error paths — and challenge flawed logic before it becomes code", icon: "🔍", color: C.red },
+          { title: "Agreement vs Disagreement", desc: "When agents converge → high confidence. When they disagree → deeper scrutiny. Graceful fallback if an agent fails", icon: "🤝", color: C.purple },
+        ].map((f, i) => (
+          <Rv key={i} visible={step >= i + 4}>
+            <Card {...f} />
+          </Rv>
+        ))}
+      </div>
+      <Rv visible={step >= 6}>
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, textAlign: "center", background: `${C.green}0a`, border: `1px solid ${C.green}22` }}>
+          <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>Complexity threshold — debate only triggers for tasks above a configurable complexity score</span>
+        </div>
+      </Rv>
+      <Rv>
+        <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+          <Badge color={C.pink}>Claude Opus</Badge>
+          <Badge color={C.pink}>Claude Sonnet</Badge>
+          <Badge color={C.cyan}>GPT-4o</Badge>
+          <Badge color={C.cyan}>GPT-o1</Badge>
+          <Badge color={C.cyan}>GPT-o3</Badge>
+          <Badge color={C.orange}>Leader picks per task</Badge>
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 8 ── PR Review Auto-Fix ──────────────────────── */
+function S8({ step }) {
+  return (
+    <div>
+      <Ttl>PR Review Auto-Fix</Ttl>
+      <Sub>The automation doesn't stop at PR creation — it handles the full review cycle</Sub>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+        {[
+          { label: "GitHub Webhook Monitoring", detail: "Listens for PR reviews and inline code comments on every repo it touches", color: C.cyan },
+          { label: "Reads Review Comments", detail: "Parses all reviewer feedback — file, line, text, reviewer identity", color: C.orange },
+          { label: "Generates Fix Instructions", detail: "Structures the fixes needed, then applies them in the repo", color: C.accent },
+          { label: "Commits & Pushes", detail: "Pushes fixes to the same branch, posts a summary comment on the PR", color: C.green },
+        ].map((s, i) => (
+          <Rv key={i} visible={step >= i}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 10, background: `${s.color}08`, border: `1px solid ${s.color}20` }}>
+              <div style={{ width: 28, height: 28, borderRadius: 7, background: `${s.color}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: s.color, flexShrink: 0 }}>{i + 1}</div>
+              <div>
+                <span style={{ fontSize: 14, fontWeight: 600, color: s.color }}>{s.label}</span>
+                <span style={{ fontSize: 13, color: C.textMuted }}> — {s.detail}</span>
+              </div>
+            </div>
+          </Rv>
+        ))}
+      </div>
+      <Rv visible={step >= 5}>
+        <div style={{ display: "flex", gap: 10 }}>
+          {[
+            { label: "Reviewer filter", val: "Only fix comments from specific people" },
+            { label: "Max retries", val: "Default 2 — configurable" },
+            { label: "Queue mode", val: "Require approval before fixing" },
+          ].map((c, i) => (
+            <div key={i} style={{ flex: 1, padding: 12, borderRadius: 10, background: C.bgCard, border: `1px solid ${C.border}`, textAlign: "center" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 2 }}>{c.label}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>{c.val}</div>
+            </div>
+          ))}
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 9 ── Quality, Dashboard & Analytics ─────────── */
+function S9({ step }) {
+  return (
+    <div>
+      <Ttl>Quality Controls & Dashboard</Ttl>
+      <Sub>Built-in gates at every stage — full visibility into tasks, costs, and ROI</Sub>
+      <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Quality Gates</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Rv>
+              <div style={{ padding: 12, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.orange, marginBottom: 4 }}>Quality Check</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Scores task 0–100 across 8 criteria. Below threshold → rejected.</div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 12, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent, marginBottom: 4 }}>Coding Plan Approval</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Plan + diff preview posted for approval. Approve via task comment or Slack buttons.</div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 12, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>Test Runner</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Auto-detects test command, runs tests, auto-fixes failures, results in PR body.</div>
+              </div>
+            </Rv>
+            <Rv>
+              <div style={{ padding: 12, borderRadius: 12, background: C.bgCard, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.pink, marginBottom: 4 }}>Live Guidance</div>
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>Send guidance post-PR for incremental updates. Failed? Provide hints and retry.</div>
+              </div>
+            </Rv>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Dashboard</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+            {[
+              { title: "Task Queue", desc: "Approve, dismiss, retry, cancel", icon: "📋", color: C.cyan },
+              { title: "Session Logs", desc: "Watch it code in real-time", icon: "📝", color: C.green },
+              { title: "Debate Transcript", desc: "Full reasoning visible", icon: "🧠", color: C.pink },
+              { title: "Steps & Costs", desc: "Per-step timeline + token costs", icon: "💰", color: C.orange },
+              { title: "Analytics & ROI", desc: "Success rates, trends, ROI", icon: "📈", color: C.accent },
+              { title: "System Health", desc: "Uptime, Prometheus metrics", icon: "🩺", color: C.green },
+            ].map((p, i) => (
+              <Rv key={i}>
+                <div style={{ padding: 10, borderRadius: 10, background: C.bgCard, border: `1px solid ${C.border}`, textAlign: "center" }}>
+                  <div style={{ fontSize: 18, marginBottom: 4 }}>{p.icon}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: p.color, marginBottom: 2 }}>{p.title}</div>
+                  <div style={{ fontSize: 10, color: C.textMuted, lineHeight: 1.4 }}>{p.desc}</div>
+                </div>
+              </Rv>
+            ))}
+          </div>
+          <Rv>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+              <Badge color={C.purple}>Google OAuth + RBAC</Badge>
+              <Badge color={C.cyan}>Real-time SSE</Badge>
+              <Badge color={C.orange}>Slack Approvals</Badge>
+            </div>
+          </Rv>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 10 ── Roadmap ────────────────────────────────── */
+function S10({ step }) {
+  return (
+    <div>
+      <Ttl>What's Next</Ttl>
+      <Sub>Towards fully autonomous engineering workflows</Sub>
+      <Rv visible={step >= 0}>
+        <div style={{ padding: 22, borderRadius: 14, background: `${C.accent}0a`, border: `1px solid ${C.accent}25`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+            <span style={{ fontSize: 30 }}>🚀</span>
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 700, color: C.accent }}>Auto Release System</div>
+              <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>Autonomous deployment pipeline</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {["Automatic deployment of services after PR merge", "Intelligent failure detection during rollout", "Auto rollback on anomaly — no human intervention"].map((t, i) => (
+              <div key={i} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${C.accent}0c`, border: `1px solid ${C.accent}18`, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{t}</div>
+            ))}
+          </div>
+        </div>
+      </Rv>
+      <Rv visible={step >= 1}>
+        <div style={{ padding: 22, borderRadius: 14, background: `${C.green}0a`, border: `1px solid ${C.green}25`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+            <span style={{ fontSize: 30 }}>🩺</span>
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 700, color: C.green }}>Auto-Healing System</div>
+              <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>Self-diagnosing, self-fixing infrastructure</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {["Continuously reads application and system logs", "Identifies issues, regressions, and anomalies automatically", "Attempts self-fix — creates a patch PR without human intervention"].map((t, i) => (
+              <div key={i} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${C.green}0c`, border: `1px solid ${C.green}18`, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{t}</div>
+            ))}
+          </div>
+        </div>
+      </Rv>
+      <Rv visible={step >= 2}>
+        <div style={{ padding: 22, borderRadius: 14, background: `${C.cyan}0a`, border: `1px solid ${C.cyan}25`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+            <span style={{ fontSize: 30 }}>👥</span>
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 700, color: C.cyan }}>Anyone Can Ship</div>
+              <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>Not just developers — everyone contributes</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {["Product Owners describe a feature or fix — AutoShip builds it", "QA teams create bug fix tasks — get PRs without writing code", "Support teams submit issues from customers — patches generated automatically"].map((t, i) => (
+              <div key={i} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${C.cyan}0c`, border: `1px solid ${C.cyan}18`, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{t}</div>
+            ))}
+          </div>
+        </div>
+      </Rv>
+      <Rv visible={step >= 3}>
+        <div style={{ padding: 22, borderRadius: 14, background: `${C.orange}0a`, border: `1px solid ${C.orange}25`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+            <span style={{ fontSize: 30 }}>🧪</span>
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 700, color: C.orange }}>Auto Testing & QA Reports</div>
+              <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>Autonomous test generation, execution, and reporting</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {["Auto-generate test cases from task requirements and acceptance criteria", "Run full test suites, generate coverage reports with pass/fail breakdown", "Identify edge cases, regression risks, and produce QA sign-off reports automatically"].map((t, i) => (
+              <div key={i} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${C.orange}0c`, border: `1px solid ${C.orange}18`, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{t}</div>
+            ))}
+          </div>
+        </div>
+      </Rv>
+      <Rv visible={step >= 4}>
+        <div style={{ padding: 14, borderRadius: 12, textAlign: "center", background: `${C.pink}0a`, border: `1px solid ${C.pink}22` }}>
+          <span style={{ color: C.pink, fontSize: 15, fontWeight: 700 }}>
+            The vision: Task → Code → Test → Deploy → Monitor → Self-Heal — anyone can ship, fully autonomous
+          </span>
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 11 ── Team Adoption ──────────────────────────── */
+function S11({ step }) {
+  return (
+    <div>
+      <Ttl>Team Adoption</Ttl>
+      <Sub>Built with feedback from the team — and already delivering results</Sub>
+      <Rv>
+        <div style={{ padding: 22, borderRadius: 16, background: `${C.green}0a`, border: `1px solid ${C.green}28`, marginBottom: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 8 }}>⚡</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: C.green }}>7 tasks in ~2 hours</div>
+          <div style={{ fontSize: 16, color: C.textMuted, marginTop: 6 }}>Maninder completed work that would have taken <strong style={{ color: C.orange }}>~2 sprints</strong> manually</div>
+        </div>
+      </Rv>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Rv>
+          <div style={{ padding: 18, borderRadius: 14, background: C.bgCard, border: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.accent, marginBottom: 12 }}>Suggestions & Feedback</div>
+            <div style={{ fontSize: 14, color: C.textMuted, lineHeight: 1.7 }}>
+              Key improvements driven by feedback from <strong style={{ color: C.text }}>Kedar</strong>, <strong style={{ color: C.text }}>Ajay</strong>, <strong style={{ color: C.text }}>Venky</strong>, and <strong style={{ color: C.text }}>Abhishek</strong> — shaping everything from quality controls to the debate system and workflow configurability.
+            </div>
+          </div>
+        </Rv>
+        <Rv>
+          <div style={{ padding: 18, borderRadius: 14, background: C.bgCard, border: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.green, marginBottom: 12 }}>Active Users</div>
+            <div style={{ fontSize: 14, color: C.textMuted, lineHeight: 1.7 }}>
+              <strong style={{ color: C.text }}>Maninder</strong> and <strong style={{ color: C.text }}>Pratistha</strong> have started using AutoShip for their day-to-day tasks — delivering PRs across multiple repos with full test coverage and review cycles handled automatically.
+            </div>
+          </div>
+        </Rv>
+      </div>
+    </div>
+  );
+}
+
+/* 12 ── Demo ───────────────────────────────────── */
+function S12({ step }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" }}>
+      <Rv><Logo size={90} /></Rv>
+      <Rv>
+        <h1 style={{ fontSize: "clamp(34px, 3.8vw, 52px)", fontWeight: 800, color: C.text, margin: "14px 0 10px" }}>Demo</h1>
+      </Rv>
+      <Rv>
+        <p style={{ fontSize: 18, color: C.textMuted, margin: "0 0 14px", maxWidth: 500, lineHeight: 1.6 }}>
+          Let's handover a task to AutoShip and watch how it turns into a pull request
+        </p>
+        <div style={{ height: 14 }} />
+      </Rv>
+      <Rv>
+        <a href="#" target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", padding: "12px 26px", borderRadius: 12, background: `${C.accent}18`, border: `1px solid ${C.accent}50`, color: C.accent, fontWeight: 600, fontSize: 16, marginBottom: 36, textDecoration: "none", cursor: "pointer" }}>
+          autoship
+        </a>
+      </Rv>
+      <Rv>
+        <div style={{ display: "flex", gap: 28 }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 3 }}>Built by</div>
+            <div style={{ fontSize: 17, fontWeight: 600, color: C.text }}>Waheed</div>
+          </div>
+          <div style={{ width: 1, background: C.border }} />
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 3 }}>Team</div>
+            <div style={{ fontSize: 17, fontWeight: 600, color: C.text }}>Saras Analytics</div>
+          </div>
+        </div>
+      </Rv>
+    </div>
+  );
+}
+
+/* 13 ── Q&A ────────────────────────────────────── */
+function S13({ step }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" }}>
+      <Rv visible={step >= 0}><Logo size={50} /></Rv>
+      <Rv visible={step >= 0}><div style={{ fontSize: 64, marginBottom: 14 }}>❓</div></Rv>
+      <Rv visible={step >= 0} delay={200}>
+        <h1 style={{ fontSize: "clamp(34px, 3.8vw, 52px)", fontWeight: 800, color: C.text, margin: "0 0 10px" }}>Questions?</h1>
+      </Rv>
+      <Rv visible={step >= 1}>
+        <p style={{ fontSize: 18, color: C.textMuted, margin: "0 0 28px" }}>Thank you!</p>
+      </Rv>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   SLIDE REGISTRY + APP
+   ═══════════════════════════════════════════════════ */
+
+const SLIDES = [
+  { C: S0,  title: "AutoShip",           max: 0 },
+  { C: S1,  title: "The Problem",        max: 0 },
+  { C: S2,  title: "The Solution",       max: 0 },
+  { C: S3,  title: "Triggering",         max: 0 },
+  { C: S4,  title: "Pipeline",           max: 0 },
+  { C: S5,  title: "Codebase Intel & Learning", max: 0 },
+  { C: S6,  title: "Multi-Repo",         max: 0 },
+  { C: S7,  title: "Debate",             max: 0 },
+  { C: S8,  title: "PR Auto-Fix",        max: 0 },
+  { C: S9,  title: "Quality & Dashboard", max: 0 },
+  { C: S10, title: "What's Next",        max: 0 },
+  { C: S11, title: "Team Adoption",      max: 0 },
+  { C: S12, title: "Demo",               max: 0 },
+  { C: S13, title: "Q&A",                max: 0 },
+];
+
+function App() {
+  const [si, setSi] = useState(0);
+  const [step, setStep] = useState(0);
+  const [fade, setFade] = useState(false);
+  const [laser, setLaser] = useState(false);
+  const [laserPos, setLaserPos] = useState({ x: -100, y: -100 });
+
+  const cur = SLIDES[si];
+  const Comp = cur.C;
+
+  const next = useCallback(() => {
+    if (fade) return;
+    if (step < cur.max) setStep(s => s + 1);
+    else if (si < SLIDES.length - 1) { setFade(true); setTimeout(() => { setSi(i => i + 1); setStep(0); setFade(false); }, 170); }
+  }, [step, si, cur.max, fade]);
+
+  const back = useCallback(() => {
+    if (fade) return;
+    if (step > 0) setStep(s => s - 1);
+    else if (si > 0) { setFade(true); const p = SLIDES[si - 1]; setTimeout(() => { setSi(i => i - 1); setStep(p.max); setFade(false); }, 170); }
+  }, [step, si, fade]);
+
+  const goTo = useCallback((i) => {
+    if (fade) return;
+    setFade(true); setTimeout(() => { setSi(i); setStep(0); setFade(false); }, 170);
+  }, [fade]);
+
+  useEffect(() => {
+    const h = (e) => {
+      if (["ArrowRight"," ","Enter","PageDown"].includes(e.key)) { e.preventDefault(); next(); }
+      else if (["ArrowLeft","Backspace","PageUp"].includes(e.key)) { e.preventDefault(); back(); }
+      else if (e.key === "Home") { e.preventDefault(); goTo(0); }
+      else if (e.key === "End") { e.preventDefault(); goTo(SLIDES.length - 1); }
+      else if (e.key === "f" || e.key === "F") {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
+      }
+      else if (e.key === "l" || e.key === "L") { setLaser(v => !v); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [next, back, goTo]);
+
+  useEffect(() => {
+    const m = (e) => setLaserPos({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", m);
+    return () => window.removeEventListener("mousemove", m);
+  }, []);
+
+
+  const progress = ((si + (step / (cur.max || 1))) / (SLIDES.length - 1)) * 100;
+  const atEnd = si === SLIDES.length - 1 && step >= cur.max;
+  const atStart = si === 0 && step === 0;
+
+  return (
+    <div style={{ width: "100%", height: "100vh", background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", cursor: laser ? "none" : "default" }}>
+      {laser && <>
+        <div style={{
+          position: "fixed", left: laserPos.x - 12, top: laserPos.y - 12,
+          width: 24, height: 24, borderRadius: "50%",
+          background: "radial-gradient(circle, #ff2222 0%, #ff222299 35%, #ff222244 60%, transparent 75%)",
+          boxShadow: "0 0 16px 6px #ff222266, 0 0 32px 12px #ff222233, 0 0 48px 18px #ff222211",
+          pointerEvents: "none", zIndex: 99999,
+        }} />
+        <div style={{
+          position: "fixed", left: laserPos.x - 4, top: laserPos.y - 4,
+          width: 8, height: 8, borderRadius: "50%",
+          background: "#fff", opacity: 0.9,
+          pointerEvents: "none", zIndex: 100000,
+        }} />
+      </>}
+      <div style={{ height: 3, background: C.border, flexShrink: 0 }}>
+        <div style={{ height: "100%", background: `linear-gradient(90deg, ${C.accent}, ${C.cyan})`, width: `${progress}%`, transition: "width 0.3s ease" }} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 24px", flexShrink: 0, borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Logo size={22} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>AutoShip</span>
+          <span style={{ fontSize: 12, color: C.textDim }}>— {cur.title}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {SLIDES.map((s, i) => (
+            <div key={i} onClick={() => goTo(i)} title={s.title} style={{
+              width: i === si ? 22 : 6, height: 6, borderRadius: 3,
+              background: i === si ? C.accent : i < si ? C.accent + "55" : C.border,
+              cursor: "pointer", transition: "all 0.3s",
+            }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 11, color: C.textDim }}>{si + 1}/{SLIDES.length}</span>
+          <button onClick={() => {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+            else document.exitFullscreen();
+          }} style={{ padding: "3px 8px", borderRadius: 5, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11 }}>⛶</button>
+        </div>
+      </div>
+      <div style={{
+        flex: 1, padding: "24px 48px 16px", overflow: "auto",
+        display: "flex", flexDirection: "column",
+        opacity: fade ? 0 : 1, transform: fade ? "translateY(12px)" : "translateY(0)", transition: "opacity 0.22s ease, transform 0.22s ease",
+      }}>
+        <div style={{ margin: "auto 0", flex: "0 1 auto" }}><Comp step={step} /></div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 24px", borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <button onClick={(e) => { e.stopPropagation(); back(); }} disabled={atStart} style={{
+          padding: "6px 18px", borderRadius: 7, border: `1px solid ${C.border}`,
+          background: "transparent", color: C.textMuted, fontSize: 13, fontWeight: 600, opacity: atStart ? 0.3 : 1,
+        }}>← Back</button>
+        <div style={{ fontSize: 11, color: C.textDim }}>→ / Space to advance  •  L for laser  •  F for fullscreen</div>
+        <button onClick={(e) => { e.stopPropagation(); next(); }} disabled={atEnd} style={{
+          padding: "6px 18px", borderRadius: 7, border: "none",
+          background: C.accent, color: "#fff", fontSize: 13, fontWeight: 600, opacity: atEnd ? 0.3 : 1,
+        }}>Next →</button>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

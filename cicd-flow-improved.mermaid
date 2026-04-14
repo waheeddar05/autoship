@@ -1,0 +1,208 @@
+---
+title: "Saras Analytics — Improved CI/CD Pipeline v2"
+---
+flowchart TD
+    subgraph SHARED["SHARED REUSABLE WORKFLOW (github-actions repo)"]
+        direction LR
+        SW1["service-deploy.yml
+━━━━━━━━━━━━━━━━
+Inputs:
+• service-name
+• language (java|node)
+• java-version / node-version
+• target-env (dev|test|prod)
+━━━━━━━━━━━━━━━━
+Handles ALL stages below
+per-language aware"]
+    end
+
+    subgraph CI["CI — BUILD & VALIDATE (every push to dev)"]
+        A["👨‍💻 Push to dev branch"] --> B{"Language?"}
+
+        B -->|"Java/Kotlin"| C1["🧪 Gradle Test
++ Checkstyle + SpotBugs
++ JaCoCo Coverage ≥ 80%"]
+        B -->|"Node.js"| C2["🧪 npm test
++ ESLint + Prettier
++ Coverage ≥ 80%"]
+
+        C1 --> D["🐳 Docker Build
+(Multi-stage, layer-cached)
+--platform linux/amd64"]
+        C2 --> D
+
+        D --> E["🔍 Trivy Scan
+severity: CRITICAL,HIGH
+exit-code: 1"]
+
+        E -->|"Fail"| X1["❌ Pipeline Fails
+→ Slack #deployments
+→ PR comment with CVEs"]
+        E -->|"Pass"| F["📦 Push to Artifact Registry
+us-central1-docker.pkg.dev/your-gcp-project
+Tags: sha-SHORT, run-ID, latest"]
+    end
+
+    subgraph CD_DEV["CD — DEV DEPLOY (auto on CI pass)"]
+        F --> G["✏️ Update dev-values.yaml
+on argo-deployment branch
+Using: yq + retry-rebase loop
+(handles concurrent deploys)"]
+
+        G --> H["🔄 ArgoCD Auto-Sync
+→ your-namespace
+Rolling update strategy"]
+
+        H --> I["⏳ Rollout Verification
+kubectl rollout status
+timeout: 5m"]
+
+        I -->|"Timeout/Failed"| X2["❌ Auto-Rollback
+→ revert tag in dev-values.yaml
+→ Slack Alert #incidents"]
+
+        I -->|"Ready"| I2["🏥 Health + Smoke Tests
+/health → 200 OK
+/ready → 200 OK
+Basic API contract check"]
+
+        I2 -->|"Fail"| X2
+        I2 -->|"Pass"| J["✅ Dev Deploy Complete
+→ Slack #deployments
+→ GitHub Deployment Status"]
+    end
+
+    subgraph PROMOTE_TEST["PROMOTION TO TEST (manual trigger)"]
+        J --> K["📋 GitHub Deployment
+created with 'test' environment
+Shows: image tag, commit SHA,
+changelog (auto-generated),
+test results, Trivy report"]
+
+        K --> L["🛡️ GitHub Environment
+Protection Rule
+Required reviewers: 1+
+Wait timer: 0"]
+
+        L -->|"Approved"| M1["✏️ Update test-values.yaml
+yq + retry-rebase
+(same image, tested in dev)"]
+
+        L -->|"Rejected"| X3["🚫 Rejected
+Deployment marked failed"]
+
+        M1 --> N1["🔄 ArgoCD Auto-Sync
+→ test namespace"]
+
+        N1 --> O1["⏳ Rollout Verification
++ Integration Test Suite
++ API contract tests"]
+
+        O1 -->|"Fail"| X4["❌ Auto-Rollback
+→ revert test-values.yaml
+→ Slack Alert"]
+        O1 -->|"Pass"| P1["✅ Test Deploy Complete
+→ Slack #deployments"]
+    end
+
+    subgraph PROMOTE_PROD["PROMOTION TO PROD (manual trigger + approval)"]
+        P1 --> Q["📋 GitHub Deployment
+created with 'production' env
+Includes full test report
+from test environment"]
+
+        Q --> R["🛡️ GitHub Environment
+Protection Rule
+Required reviewers: 2+
+Wait timer: 15 min"]
+
+        R -->|"Approved"| S1["✏️ Update prod-values.yaml
+yq + retry-rebase"]
+
+        R -->|"Rejected"| X5["🚫 Rejected"]
+
+        S1 --> S2["🔄 ArgoCD Sync
+→ prod namespace
+Progressive: 25% → 50% → 100%
+(Argo Rollouts)"]
+
+        S2 --> S3["📊 Canary Analysis
+Error rate < 1%
+P99 latency < target
+5-min observation window"]
+
+        S3 -->|"Metrics OK"| S4["✅ Full Rollout
+→ 100% traffic"]
+        S3 -->|"Metrics Bad"| X6["❌ Auto-Rollback
+→ revert prod-values.yaml
+→ PagerDuty Alert
+→ Slack #incidents"]
+
+        S4 --> T["✅ Prod Deploy Complete
+→ Slack #releases
+→ GitHub Release tag"]
+    end
+
+    subgraph AUTH["AUTH & SECRETS"]
+        direction LR
+        AU1["Workload Identity Federation
+(no SA key JSON)
+━━━━━━━━━━━━━━━━
+GitHub OIDC → GCP WIF
+→ Artifact Registry push
+→ GKE deploy"]
+
+        AU2["External Secrets Operator
+━━━━━━━━━━━━━━━━
+GCP Secret Manager
+→ K8s Secrets (auto-sync)
+No manual kubectl create"]
+    end
+
+    subgraph ARGO_BRANCH["ARGO-DEPLOYMENT BRANCH STRUCTURE"]
+        direction LR
+        AB1["helm/
+├── service-a/
+│   ├── Chart.yaml
+│   ├── templates/
+│   ├── dev-values.yaml
+│   ├── test-values.yaml
+│   └── prod-values.yaml
+├── service-b/
+│   └── (same structure)
+└── base/
+    └── (shared templates)"]
+    end
+
+    subgraph OBSERVE["OBSERVABILITY"]
+        direction LR
+        OB1["Structured Logging
+→ Cloud Logging
+
+Metrics
+→ Cloud Monitoring
+→ Custom dashboards
+
+Alerts
+→ Error rate spikes
+→ Latency degradation
+→ Pod restart loops"]
+    end
+
+    style CI fill:#1a2a1a,stroke:#4ade80,color:#fff
+    style CD_DEV fill:#1a3a2a,stroke:#4ade80,color:#fff
+    style PROMOTE_TEST fill:#1a2a3a,stroke:#60a5fa,color:#fff
+    style PROMOTE_PROD fill:#1a1a3a,stroke:#818cf8,color:#fff
+    style SHARED fill:#3a2a1a,stroke:#fb923c,color:#fff
+    style AUTH fill:#2a1a2a,stroke:#f472b6,color:#fff
+    style ARGO_BRANCH fill:#2a1a3a,stroke:#c084fc,color:#fff
+    style OBSERVE fill:#1a2a2a,stroke:#2dd4bf,color:#fff
+    style X1 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style X2 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style X3 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style X4 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style X5 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style X6 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style J fill:#14532d,stroke:#4ade80,color:#fff
+    style P1 fill:#14532d,stroke:#4ade80,color:#fff
+    style T fill:#14532d,stroke:#4ade80,color:#fff

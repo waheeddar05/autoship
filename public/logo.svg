@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <!-- Background gradient -->
+    <radialGradient id="bg" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#1a1035"/>
+      <stop offset="100%" stop-color="#060610"/>
+    </radialGradient>
+    <!-- Accent gradient -->
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="50%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#e879f9"/>
+    </linearGradient>
+    <!-- Glow -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Outer glow -->
+    <filter id="outerGlow">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Ship trail gradient -->
+    <linearGradient id="trail" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#c084fc" stop-opacity="0.8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="248" fill="url(#bg)" stroke="url(#accent)" stroke-width="2.5" stroke-opacity="0.4"/>
+
+  <!-- Subtle star dots -->
+  <circle cx="120" cy="140" r="1.5" fill="#c084fc" opacity="0.5"/>
+  <circle cx="380" cy="100" r="1" fill="#e879f9" opacity="0.4"/>
+  <circle cx="90" cy="300" r="1.2" fill="#7c3aed" opacity="0.6"/>
+  <circle cx="420" cy="280" r="1" fill="#c084fc" opacity="0.3"/>
+  <circle cx="340" cy="380" r="1.5" fill="#e879f9" opacity="0.4"/>
+  <circle cx="160" cy="400" r="1" fill="#7c3aed" opacity="0.5"/>
+  <circle cx="200" cy="120" r="1" fill="#c084fc" opacity="0.3"/>
+  <circle cx="440" cy="200" r="1.2" fill="#e879f9" opacity="0.5"/>
+
+  <!-- Orbital ring (pipeline) -->
+  <ellipse cx="256" cy="256" rx="160" ry="55" transform="rotate(-20 256 256)" stroke="url(#accent)" stroke-width="1.8" stroke-opacity="0.25" fill="none"/>
+
+  <!-- Pipeline flow dots on orbit -->
+  <circle cx="130" cy="218" r="4" fill="#7c3aed" opacity="0.6" filter="url(#glow)"/>
+  <circle cx="190" cy="190" r="3" fill="#c084fc" opacity="0.5"/>
+  <circle cx="350" cy="308" r="3.5" fill="#c084fc" opacity="0.5"/>
+  <circle cx="400" cy="290" r="3" fill="#e879f9" opacity="0.4"/>
+
+  <!-- Rocket / Ship shape -->
+  <g filter="url(#outerGlow)" transform="translate(256, 240)">
+    <!-- Engine exhaust / trail -->
+    <path d="M-8 50 L-25 90 Q0 75 25 90 L8 50" fill="url(#accent)" opacity="0.5"/>
+    <path d="M-5 50 L-15 78 Q0 68 15 78 L5 50" fill="url(#accent)" opacity="0.7"/>
+
+    <!-- Main rocket body -->
+    <path d="M0 -70 Q-28 -30 -28 20 Q-28 45 -18 55 L-8 55 L-8 50 Q-20 45 -20 20 Q-20 -25 0 -55 Q20 -25 20 20 Q20 45 8 50 L8 55 L18 55 Q28 45 28 20 Q28 -30 0 -70Z"
+          fill="url(#accent)" stroke="#e879f9" stroke-width="0.5" stroke-opacity="0.3"/>
+
+    <!-- Window / porthole -->
+    <circle cx="0" cy="-10" r="10" fill="#060610" stroke="#c084fc" stroke-width="1.5"/>
+    <circle cx="0" cy="-10" r="6" fill="#1a1035" stroke="#7c3aed" stroke-width="0.8" opacity="0.8"/>
+    <circle cx="-2" cy="-12" r="2" fill="#c084fc" opacity="0.6"/>
+
+    <!-- Fins -->
+    <path d="M-28 30 L-42 55 L-28 48 Z" fill="url(#accent)" opacity="0.8"/>
+    <path d="M28 30 L42 55 L28 48 Z" fill="url(#accent)" opacity="0.8"/>
+
+    <!-- Nose tip highlight -->
+    <path d="M0 -70 Q-8 -55 -10 -40 Q0 -50 10 -40 Q8 -55 0 -70Z" fill="#e879f9" opacity="0.3"/>
+  </g>
+
+  <!-- Git branch lines (code pipeline visual) -->
+  <g stroke="url(#accent)" stroke-width="1.5" stroke-opacity="0.2" fill="none">
+    <path d="M160 360 Q200 340 220 360 Q240 380 280 360"/>
+    <path d="M220 360 Q230 345 250 345 Q270 345 280 360"/>
+  </g>
+
+  <!-- Small commit dots -->
+  <circle cx="160" cy="360" r="3" fill="#7c3aed" opacity="0.4"/>
+  <circle cx="220" cy="360" r="3" fill="#c084fc" opacity="0.5"/>
+  <circle cx="250" cy="345" r="2.5" fill="#e879f9" opacity="0.4"/>
+  <circle cx="280" cy="360" r="3" fill="#7c3aed" opacity="0.4"/>
+
+  <!-- Text: AUTOSHIP -->
+  <text x="256" y="430" text-anchor="middle" font-family="'Inter', 'Segoe UI', system-ui, sans-serif" font-weight="800" font-size="38" letter-spacing="6" fill="url(#accent)">AUTOSHIP</text>
+</svg>

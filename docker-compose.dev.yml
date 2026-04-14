@@ -1,0 +1,16 @@
+# Dev override — run with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+version: "3.8"
+
+services:
+  automation:
+    build: .
+    volumes:
+      # Mount local source for live changes (no rebuild needed for src/public edits)
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+    environment:
+      - NODE_ENV=development
+      - BASE_URL=http://localhost:3457
+      - GOOGLE_CLIENT_ID=
+      - GOOGLE_CLIENT_SECRET=
+    command: ["node", "--watch", "src/server.js"]

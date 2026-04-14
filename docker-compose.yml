@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  automation:
+    build: .
+    container_name: clickup-automation
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3457}:3457"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-automation}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-clickup_automation}
+      - REPOS_BASE_DIR=/app/repos
+    volumes:
+      - repos-data:/app/repos
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - automation-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: clickup-automation-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-clickup_automation}
+      POSTGRES_USER: ${DB_USER:-automation}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-automation} -d ${DB_NAME:-clickup_automation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - automation-net
+    # Not exposed externally by default; access via docker exec if needed
+
+volumes:
+  repos-data:
+    driver: local
+  pg-data:
+    driver: local
+
+networks:
+  automation-net:
+    driver: bridge

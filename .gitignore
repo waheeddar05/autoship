@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.dev
+.env.prod
+*.log
+logs/
+repos/
+backups/
+.idea/
+.DS_Store
+*.bak
