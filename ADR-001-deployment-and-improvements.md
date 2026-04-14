@@ -2,13 +2,13 @@
 
 **Status:** Proposed
 **Date:** 2026-02-27
-**Deciders:** Waheed
+**Deciders:** Engineering Team
 
 ---
 
 ## Context
 
-The `clickup-claude-automation` system automates the developer workflow: ClickUp ticket → Claude Code (Opus 4.6) → GitHub PR targeting `dev`. Currently running as a local Node.js process on Waheed's Mac with:
+The `clickup-claude-automation` system automates the developer workflow: ClickUp ticket → Claude Code (Opus 4.6) → GitHub PR targeting `dev`. Currently running as a local Node.js process on a developer's Mac with:
 
 - Express server (port 3457) handling webhooks + polling
 - PostgreSQL for task state machine (tasks, execution_logs, task_messages, pr_reviews)
@@ -19,7 +19,7 @@ The `clickup-claude-automation` system automates the developer workflow: ClickUp
 
 **The problem:** This runs locally — tied to one laptop, no HA, no team access, repos cloned to local disk. We need to deploy to a dev server first, then eventually QA → prod.
 
-**Reference architecture:** The `source-service` repo (Java/Spring Boot) is already deployed to the same infrastructure, so we'll mirror its deployment patterns (Docker + reverse proxy + env-based config).
+**Reference architecture:** An existing Java/Spring Boot service is already deployed to the same infrastructure, so we'll mirror its deployment patterns (Docker + reverse proxy + env-based config).
 
 ---
 

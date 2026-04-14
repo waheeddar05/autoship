@@ -77,7 +77,7 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
           if (emailDomain !== ALLOWED_DOMAIN) {
             logger.warn({ email }, "Login attempt from unauthorized domain");
             return done(null, false, {
-              message: "Access restricted to Saras Analytics employees.",
+              message: "Access restricted to authorized domain members.",
             });
           }
 

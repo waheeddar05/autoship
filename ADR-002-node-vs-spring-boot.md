@@ -2,11 +2,11 @@
 
 **Status:** Proposed
 **Date:** 2026-02-28
-**Deciders:** Waheed
+**Deciders:** Engineering Team
 
 ## Context
 
-AutoShip is a ~3,200 LOC Node.js (Express) application that automates the ClickUp → Claude Code → GitHub PR pipeline. The team's primary backend stack is Java/Spring Boot and Kotlin, and the `source-service` (already deployed) is a Spring Boot app with a mature Gradle build, profile-based configs, and OpenTelemetry.
+AutoShip is a ~3,200 LOC Node.js (Express) application that automates the ClickUp → Claude Code → GitHub PR pipeline. The team's primary backend stack is Java/Spring Boot and Kotlin, and an existing service (already deployed) is a Spring Boot app with a mature Gradle build, profile-based configs, and OpenTelemetry.
 
 The question: should we rewrite AutoShip in Spring Boot for stack consistency, or keep it in Node.js?
 
@@ -24,7 +24,7 @@ The question: should we rewrite AutoShip in Spring Boot for stack consistency, o
 | Cost | **Zero** — no rewrite needed |
 | Scalability | **Sufficient** — this is a single-team internal tool, not a high-RPS service |
 | Team familiarity | **Medium** — not the primary stack, but JS is straightforward |
-| Deployment alignment | **High** — Docker + nginx pattern matches source-service |
+| Deployment alignment | **High** — Docker + nginx pattern matches existing services |
 
 **Why this fits:**
 
@@ -48,11 +48,11 @@ The question: should we rewrite AutoShip in Spring Boot for stack consistency, o
 | Cost | **2-3 weeks** of engineering time |
 | Scalability | **Overkill** — Spring's DI, AOP, and thread pool model add overhead for a simple pipeline tool |
 | Team familiarity | **High** — primary stack |
-| Deployment alignment | **High** — matches source-service exactly |
+| Deployment alignment | **High** — matches existing services exactly |
 
 **Pros:**
 - Single language across all backend services
-- Can reuse source-service's Gradle build, CI/CD, monitoring, and deployment scripts verbatim
+- Can reuse existing service's Gradle build, CI/CD, monitoring, and deployment scripts verbatim
 - Kotlin coroutines could handle async subprocess management cleanly
 - Spring Boot Actuator gives you health checks, metrics, and Prometheus out of the box
 
@@ -104,7 +104,7 @@ Each of these is 3-5 lines in Node.js. In Java, each requires a `ProcessBuilder`
 - ✅ Subprocess handling stays clean and maintainable
 - ✅ Low memory/startup footprint on dev server
 - ⚠️ Team needs basic Node.js knowledge for maintenance
-- ⚠️ Can't share Spring Boot libraries (but there's nothing to share — this app has no domain overlap with source-service)
+- ⚠️ Can't share Spring Boot libraries (but there's nothing to share — this app has no domain overlap with existing services)
 
 **What would change the decision:**
 - If AutoShip grows into a multi-service platform with shared domain models → consider JVM
@@ -115,5 +115,5 @@ Each of these is 3-5 lines in Node.js. In Java, each requires a `ProcessBuilder`
 
 1. [x] Keep Node.js — no migration
 2. [ ] Align deployment patterns (Docker, nginx, env-var config) — already done in ADR-001
-3. [ ] Add OpenTelemetry tracing to Node.js app (matches source-service observability) — optional future enhancement
+3. [ ] Add OpenTelemetry tracing to Node.js app (matches existing service observability) — optional future enhancement
 4. [ ] Document the Node.js maintenance basics for the team in README

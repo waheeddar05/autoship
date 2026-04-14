@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-03-01
-**Author:** Waheed (via Architecture Review)
+**Author:** Engineering Team (via Architecture Review)
 **Scope:** Frontend (Dashboard UI), Backend API, UX, Debate System
 
 ---
@@ -17,12 +17,12 @@ After a thorough review of `the AutoShip dashboard`, the codebase (`public/index
 
 ### 2.1 FAILED Task — Root Cause
 
-The latest task "Expose CRUD Endpoints for `dbtGraphQLConfig` Entity" failed because **a PR already exists** for that branch:
+The latest task "Expose CRUD Endpoints for `ExampleConfig` Entity" failed because **a PR already exists** for that branch:
 
 ```
-gh pr create --base dev --head feature/86d21z5z4-expose-crud-endpoints-for-dbtgraphqlconfig-entity
+gh pr create --base dev --head feature/abc12345-expose-crud-endpoints-for-example-entity
 failed (code 1): a pull request for branch already exists:
-https://github.com/your-org/source-service/pull/1164
+https://github.com/your-org/your-service/pull/123
 ```
 
 **Fix Applied:** Each execution now generates a unique `{runId}` (6-char alphanumeric suffix) appended to the branch name. This ensures every retry/re-run of the same ClickUp task gets its own branch and PR — no collisions.
@@ -32,9 +32,9 @@ https://github.com/your-org/source-service/pull/1164
 - `config-manager.js` — Default branch format changed to `feature/{taskId}-{slug}-{runId}`
 
 Example: Same task retried 3 times →
-- `feature/86d21z5z4-expose-crud-endpoints-...-a7k2m9`
-- `feature/86d21z5z4-expose-crud-endpoints-...-x3p8n1`
-- `feature/86d21z5z4-expose-crud-endpoints-...-f2q5w7`
+- `feature/abc12345-expose-crud-endpoints-...-a7k2m9`
+- `feature/abc12345-expose-crud-endpoints-...-x3p8n1`
+- `feature/abc12345-expose-crud-endpoints-...-f2q5w7`
 
 ### 2.2 Missing Dashboard Actions (Retry, Delete, Cancel)
 
@@ -226,7 +226,7 @@ The dashboard has **zero authentication**. Anyone with the URL can access settin
 
 **Recommendation:** Add at minimum:
 - Basic auth via environment variable (`DASHBOARD_USER` / `DASHBOARD_PASS`)
-- Or Google OAuth for the Saras team
+- Or Google OAuth for your team
 
 ### 5.3 Debate Model Identifier Mismatch
 

@@ -60,7 +60,7 @@ const debateFeatures = [
 ];
 
 const deploymentSteps = [
-  { phase: "Local Dev", detail: "Waheed's Mac → localhost:3457", status: "done" },
+  { phase: "Local Dev", detail: "Developer Mac → localhost:3457", status: "done" },
   { phase: "Docker", detail: "Containerized with docker-compose", status: "done" },
   { phase: "GKE Dev", detail: "autoship.your-domain.com", status: "done" },
   { phase: "CI/CD", detail: "GitHub Actions → ArgoCD → GKE", status: "done" },
@@ -138,7 +138,7 @@ function Slide0({ step }) {
       </RevealItem>
       <RevealItem visible={step >= 2} delay={200}>
         <div style={{ marginTop: 48, display: "flex", gap: 12 }}>
-          <Badge color={COLORS.cyan}>Saras Analytics</Badge>
+          <Badge color={COLORS.cyan}>Open Source</Badge>
           <Badge color={COLORS.green}>v2.0</Badge>
           <Badge>March 2026</Badge>
         </div>
@@ -567,12 +567,12 @@ function Slide12({ step }) {
         <div style={{ marginTop: 48, display: "flex", gap: 24 }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 14, color: COLORS.textDim, marginBottom: 4 }}>Built by</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.text }}>Waheed</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.text }}>Author</div>
           </div>
           <div style={{ width: 1, background: COLORS.border }} />
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 14, color: COLORS.textDim, marginBottom: 4 }}>Team</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.text }}>Saras Analytics</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.text }}>AutoShip Community</div>
           </div>
         </div>
       </RevealItem>

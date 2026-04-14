@@ -22,7 +22,7 @@ env:
 jobs:
   Build:
     name: Build
-    runs-on: runner
+    runs-on: ubuntu-latest
     env:
       BUILD_ENV: dev
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -56,7 +56,7 @@ jobs:
   Deploy:
     name: Deploy to Dev
     needs: Build
-    runs-on: runner
+    runs-on: ubuntu-latest
     env:
       BUILD_ENV: dev
       VALUES_FILE: dev-values.yaml
