@@ -87,7 +87,7 @@ The repo is cloned/pulled to `$REPOS_BASE_DIR/<repo-name>`.
 - **Base branch**: `dev`
 - **Feature branch**: `auto/<task-id>-<slugified-task-name>`
 - **PR title**: `#<ticketid>:<task name>`
-- **Model**: Configurable (default: `claude-opus-4-6`)
+- **Model**: Configurable (default: `claude-sonnet-4-6`)
 
 ### Modes
 
