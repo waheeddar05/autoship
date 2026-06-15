@@ -417,7 +417,7 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity } = {}) {
     // executionModel is the canonical config for which model to use for implementation.
     // NEVER fall back to claudeModel — that is a legacy/dashboard display key and may
     // hold a different model (e.g. Sonnet when the user explicitly configured Opus for execution).
-    const model = modelOverride || config.get("executionModel") || "claude-sonnet-4-6";
+    const model = modelOverride || config.get("executionModel") || "claude-opus-4-6";
     const timeout = config.get("claudeTimeout");
     const skipPerms = config.get("skipPermissions");
 
@@ -864,7 +864,7 @@ export async function execute(taskRecord) {
     }
 
     // executionModel is the canonical config — never fall back to claudeModel (may differ)
-    const claudeModel = executionModelOverride || config.get("executionModel") || "claude-sonnet-4-6";
+    const claudeModel = executionModelOverride || config.get("executionModel") || "claude-opus-4-6";
     if (isIncremental) {
       await addExecutionLog(taskId, "info", "running_claude", `Using execution model: ${claudeModel} (incremental — config override)`);
     }
@@ -1067,7 +1067,7 @@ export async function execute(taskRecord) {
           }
 
           if (totalTokens > 0 || estimatedCost > 0) {
-            const modelUsed = executionModelOverride || config.get("executionModel") || "claude-sonnet-4-6";
+            const modelUsed = executionModelOverride || config.get("executionModel") || "claude-opus-4-6";
             await addTaskCost(taskId, {
               stepName: `implementation${allRepos.length > 1 ? `_${currentRepo.name}` : ""}`,
               modelUsed, promptTokens, completionTokens, totalTokens, estimatedCost,

@@ -29,7 +29,7 @@ import { handleCommentWebhook, processSlackApproval } from "./handlers/approvalH
 import { register as prometheusRegister } from "./prometheus.js";
 import { getAssigneeIds } from "./assignee-resolver.js";
 import { recordPROutcome, updatePRMerged, updatePRChangesRequested } from "./learning.js";
-import { scheduleWeeklyDigest, scheduleDailyDigest } from "./weekly-digest.js";
+import { scheduleWeeklyDigest } from "./weekly-digest.js";
 import { verifySlackSignature, openRequestChangesModal, updateApprovalMessage } from "./services/slackInteractiveService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -830,9 +830,8 @@ async function start() {
     startPoller();
   }
 
-  // Schedule digests if enabled
+  // Schedule weekly digest if enabled
   scheduleWeeklyDigest();
-  scheduleDailyDigest();
 
   return httpServer;
 }

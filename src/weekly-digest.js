@@ -1,6 +1,6 @@
 // src/weekly-digest.js
-// Feature 17: Digest Reports
-// Generates and schedules summary reports (weekly + daily) via Slack.
+// Feature 17: Weekly Digest
+// Generates and schedules weekly summary reports via Slack.
 
 import cron from "node-cron";
 import { pool } from "./db.js";
@@ -11,56 +11,34 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 
 /**
- * Generate a digest for an arbitrary reporting window.
- *
- * Shared by both the weekly and daily digests so the Slack Block Kit format
- * stays identical — only the window, header text and comparison label differ.
- *
- * @param {object} opts
- * @param {string} opts.title           Header text (e.g. "AutoShip Weekly Digest")
- * @param {string} opts.textLabel       Notification fallback prefix (e.g. "AutoShip Weekly")
- * @param {string} opts.comparisonLabel Trend field label (e.g. "Last Week", "Prev Day")
- * @param {Date}   opts.periodStart     Start of the current window (inclusive)
- * @param {Date}   opts.periodEnd       End of the current window (exclusive)
- * @param {Date}   opts.prevStart       Start of the comparison window (inclusive)
- * @param {Date}   opts.prevEnd         End of the comparison window (exclusive)
+ * Generate a weekly digest covering the last 7 days.
  */
-export async function generateDigest({
-  title,
-  textLabel,
-  comparisonLabel,
-  periodStart,
-  periodEnd,
-  prevStart,
-  prevEnd,
-}) {
+export async function generateWeeklyDigest() {
   try {
-    const start = periodStart.toISOString();
-    const end = periodEnd.toISOString();
-    const pStart = prevStart.toISOString();
-    const pEnd = prevEnd.toISOString();
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 
-    // Current period stats
+    // Current week stats
     const { rows: weekStats } = await pool.query(
-      `SELECT
+      `SELECT 
         COUNT(*)::int as total,
         COUNT(*) FILTER (WHERE state = 'success')::int as success,
         COUNT(*) FILTER (WHERE state = 'failed')::int as failed,
         AVG(duration_ms) FILTER (WHERE state = 'success')::float as avg_duration
        FROM tasks
-       WHERE completed_at >= $1 AND completed_at < $2`,
-      [start, end]
+       WHERE completed_at >= $1`,
+      [sevenDaysAgo]
     );
 
-    // Previous period stats (for comparison)
+    // Previous week stats (for comparison)
     const { rows: prevWeekStats } = await pool.query(
-      `SELECT
+      `SELECT 
         COUNT(*)::int as total,
         COUNT(*) FILTER (WHERE state = 'success')::int as success,
         COUNT(*) FILTER (WHERE state = 'failed')::int as failed
        FROM tasks
        WHERE completed_at >= $1 AND completed_at < $2`,
-      [pStart, pEnd]
+      [fourteenDaysAgo, sevenDaysAgo]
     );
 
     const current = weekStats[0] || { total: 0, success: 0, failed: 0, avg_duration: 0 };
@@ -71,8 +49,8 @@ export async function generateDigest({
       `SELECT COALESCE(SUM(tc.estimated_cost), 0)::float as total_cost
        FROM task_costs tc
        JOIN tasks t ON t.id = tc.task_id
-       WHERE t.completed_at >= $1 AND t.completed_at < $2`,
-      [start, end]
+       WHERE t.completed_at >= $1`,
+      [sevenDaysAgo]
     );
     const totalCost = costRows[0]?.total_cost || 0;
 
@@ -85,9 +63,9 @@ export async function generateDigest({
     const { rows: complexityRows } = await pool.query(
       `SELECT complexity_level, COUNT(*)::int as count
        FROM tasks
-       WHERE completed_at >= $1 AND completed_at < $2 AND state = 'success' AND complexity_level IS NOT NULL
+       WHERE completed_at >= $1 AND state = 'success' AND complexity_level IS NOT NULL
        GROUP BY complexity_level`,
-      [start, end]
+      [sevenDaysAgo]
     );
 
     let hoursSaved = 0;
@@ -113,21 +91,21 @@ export async function generateDigest({
     const { rows: topRepos } = await pool.query(
       `SELECT repo_name, COUNT(*)::int as count
        FROM tasks
-       WHERE completed_at >= $1 AND completed_at < $2 AND repo_name IS NOT NULL
+       WHERE completed_at >= $1 AND repo_name IS NOT NULL
        GROUP BY repo_name
        ORDER BY count DESC
        LIMIT 5`,
-      [start, end]
+      [sevenDaysAgo]
     );
 
     // Failed tasks needing attention
     const { rows: failedTasks } = await pool.query(
       `SELECT id, name, clickup_task_id, error_message, repo_name
        FROM tasks
-       WHERE completed_at >= $1 AND completed_at < $2 AND state = 'failed'
+       WHERE completed_at >= $1 AND state = 'failed'
        ORDER BY completed_at DESC
        LIMIT 5`,
-      [start, end]
+      [sevenDaysAgo]
     );
 
     // Per-user task completion leaderboard
@@ -138,11 +116,11 @@ export async function generateDigest({
         COUNT(*) FILTER (WHERE t.state = 'success')::int AS completed,
         COUNT(*)::int AS total
        FROM tasks t, jsonb_array_elements(t.assignees) ae(value)
-       WHERE t.completed_at >= $1 AND t.completed_at < $2 AND ae.value->>'id' IS NOT NULL
+       WHERE t.completed_at >= $1 AND ae.value->>'id' IS NOT NULL
        GROUP BY ae.value->>'id', ae.value->>'username', ae.value->>'name'
        ORDER BY completed DESC
        LIMIT 10`,
-      [start, end]
+      [sevenDaysAgo]
     );
 
     // Determine top contributor
@@ -157,7 +135,7 @@ export async function generateDigest({
     const blocks = [
       {
         type: "header",
-        text: { type: "plain_text", text: `📊 ${title}`, emoji: true },
+        text: { type: "plain_text", text: "📊 AutoShip Weekly Digest", emoji: true },
       },
       { type: "divider" },
       {
@@ -176,7 +154,7 @@ export async function generateDigest({
           { type: "mrkdwn", text: `*💰 Cost*\n$${totalCost.toFixed(2)} spent` },
           { type: "mrkdwn", text: `*💵 Savings*\n$${costSaved.toFixed(0)} saved (ROI: ${roi}%)` },
           { type: "mrkdwn", text: `*⏱️ Dev Time Saved*\n${hoursSaved >= 8 ? '~' + (hoursSaved / 8).toFixed(1) + ' days' : hoursSaved.toFixed(1) + ' hrs'}` },
-          { type: "mrkdwn", text: `*${trendEmoji} vs ${comparisonLabel}*\n${taskDelta >= 0 ? "+" : ""}${taskDelta} tasks` },
+          { type: "mrkdwn", text: `*${trendEmoji} vs Last Week*\n${taskDelta >= 0 ? "+" : ""}${taskDelta} tasks` },
         ],
       },
     ];
@@ -233,58 +211,18 @@ export async function generateDigest({
     blocks.push({
       type: "context",
       elements: [
-        { type: "mrkdwn", text: `_Generated ${new Date().toISOString()} | ${title}_` },
+        { type: "mrkdwn", text: `_Generated ${new Date().toISOString()} | AutoShip Weekly Digest_` },
       ],
     });
 
     return {
       blocks,
-      text: `${textLabel}: ${current.success} completed, ${current.failed} failed, $${costSaved.toFixed(0)} saved`,
+      text: `AutoShip Weekly: ${current.success} completed, ${current.failed} failed, $${costSaved.toFixed(0)} saved`,
     };
   } catch (err) {
-    logger.error({ err: err.message, title }, "Failed to generate digest");
+    logger.error({ err: err.message }, "Failed to generate weekly digest");
     return null;
   }
-}
-
-/**
- * Generate a weekly digest covering the last 7 days (vs the previous 7 days).
- */
-export async function generateWeeklyDigest() {
-  const now = new Date();
-  const periodStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const prevStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-
-  return generateDigest({
-    title: "AutoShip Weekly Digest",
-    textLabel: "AutoShip Weekly",
-    comparisonLabel: "Last Week",
-    periodStart,
-    periodEnd: now,
-    prevStart,
-    prevEnd: periodStart,
-  });
-}
-
-/**
- * Generate a daily digest covering the previous calendar day — "yesterday"
- * (server-local time) — compared against the day before it.
- */
-export async function generateDailyDigest() {
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfYesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
-  const startOfDayBefore = new Date(startOfYesterday.getTime() - 24 * 60 * 60 * 1000);
-
-  return generateDigest({
-    title: "AutoShip Daily Digest",
-    textLabel: "AutoShip Daily",
-    comparisonLabel: "Prev Day",
-    periodStart: startOfYesterday,
-    periodEnd: startOfToday,
-    prevStart: startOfDayBefore,
-    prevEnd: startOfYesterday,
-  });
 }
 
 /**
@@ -317,45 +255,14 @@ export function scheduleWeeklyDigest() {
     const digest = await generateWeeklyDigest();
     if (!digest) return;
 
-    await _sendDigestToSlack(digest, "weekly");
+    await _sendDigestToSlack(digest);
   });
 
   const dayName = Object.keys(dayMap).find((k) => dayMap[k] === day) || "monday";
   logger.info({ day: dayName, hour, cron: cronExpr }, "Weekly digest scheduled");
 }
 
-/**
- * Schedule the daily digest using node-cron. Runs every day at the configured
- * hour and reports on the previous calendar day's tasks.
- */
-export function scheduleDailyDigest() {
-  if (!config.get("dailyDigestEnabled")) {
-    logger.info("Daily digest disabled");
-    return;
-  }
-
-  if (!SLACK_BOT_TOKEN && !SLACK_WEBHOOK_URL) {
-    logger.warn("Daily digest enabled but no Slack credentials configured");
-    return;
-  }
-
-  const hour = config.get("dailyDigestHour") || 9;
-
-  // Cron: minute hour * * * → every day at the given hour
-  const cronExpr = `0 ${hour} * * *`;
-
-  cron.schedule(cronExpr, async () => {
-    logger.info("Running daily digest...");
-    const digest = await generateDailyDigest();
-    if (!digest) return;
-
-    await _sendDigestToSlack(digest, "daily");
-  });
-
-  logger.info({ hour, cron: cronExpr }, "Daily digest scheduled");
-}
-
-async function _sendDigestToSlack(digest, label = "digest") {
+async function _sendDigestToSlack(digest) {
   const channelId = config.get("slackChannel") || process.env.SLACK_CHANNEL_ID;
 
   try {
@@ -380,9 +287,9 @@ async function _sendDigestToSlack(digest, label = "digest") {
         body: JSON.stringify({ blocks: digest.blocks, text: digest.text }),
       });
     }
-    logger.info({ label }, "Digest sent to Slack");
+    logger.info("Weekly digest sent to Slack");
   } catch (err) {
-    logger.error({ err: err.message, label }, "Failed to send digest to Slack");
+    logger.error({ err: err.message }, "Failed to send weekly digest to Slack");
   }
 }
 
