@@ -4,6 +4,7 @@
 
 import { pool } from "./db.js";
 import { logger } from "./logger.js";
+import { recordPromptOutcome } from "./services/promptEvolutionService.js";
 
 /**
  * Record the outcome of a PR (merged, changes requested, review comments).
@@ -132,13 +133,27 @@ export async function getHistoricalInsights(repoName, taskDescription) {
  */
 export async function updatePRMerged(prUrl) {
   try {
-    await pool.query(
+    const { rows } = await pool.query(
       `UPDATE pr_outcomes SET merged = TRUE, merged_at = NOW(),
        time_to_merge_ms = EXTRACT(EPOCH FROM (NOW() - created_at))::bigint * 1000
-       WHERE pr_url = $1 AND merged = FALSE`,
+       WHERE pr_url = $1 AND merged = FALSE
+       RETURNING task_id, revisions, time_to_merge_ms`,
       [prUrl]
     );
     logger.info({ prUrl }, "PR marked as merged");
+
+    // Prompt evolution: attribute the merge to the prompt variant used
+    for (const row of rows) {
+      if (row.task_id) {
+        recordPromptOutcome({
+          taskId: row.task_id,
+          promptType: "execution",
+          merged: true,
+          revisionsNeeded: row.revisions || 0,
+          timeToMergeMs: row.time_to_merge_ms,
+        }).catch(() => {});
+      }
+    }
   } catch (err) {
     logger.warn({ prUrl, err: err.message }, "Failed to update PR merged status");
   }
@@ -188,14 +203,28 @@ export async function recordDiffPreviewAccuracy({ taskId, accuracy, details }) {
  */
 export async function updatePRChangesRequested(prUrl, reviewComments = []) {
   try {
-    await pool.query(
-      `UPDATE pr_outcomes SET 
+    const { rows } = await pool.query(
+      `UPDATE pr_outcomes SET
        changes_requested = TRUE,
        revisions = revisions + 1,
        review_comments = review_comments || $2::jsonb
-       WHERE pr_url = $1`,
+       WHERE pr_url = $1
+       RETURNING task_id, revisions`,
       [prUrl, JSON.stringify(reviewComments)]
     );
+
+    // Prompt evolution: record the revision against the prompt variant
+    for (const row of rows) {
+      if (row.task_id) {
+        recordPromptOutcome({
+          taskId: row.task_id,
+          promptType: "execution",
+          merged: false,
+          revisionsNeeded: row.revisions || 1,
+          timeToMergeMs: null,
+        }).catch(() => {});
+      }
+    }
   } catch (err) {
     logger.warn({ prUrl, err: err.message }, "Failed to update PR changes requested");
   }

@@ -585,6 +585,16 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Prompt Evolution ───────────────────────────────────────
+  promptEvolutionEnabled: {
+    envKey: "PROMPT_EVOLUTION_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Prompt Evolution Tracking",
+    description: "Track prompt configuration variants and their PR merge rates",
+    group: "execution",
+  },
+
   // ── LLM Complexity Assessment ──────────────────────────────
   llmComplexityEnabled: {
     envKey: "LLM_COMPLEXITY_ENABLED",

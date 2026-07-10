@@ -23,6 +23,7 @@ import { scoreComplexity } from "./complexity.js";
 import { recordConfigChange, getConfigAuditLog, getConfigKeyHistory } from "./services/configAuditService.js";
 import { getStaleTasks } from "./services/staleTaskCleanupService.js";
 import { getCostAnomalyHistory, getCostStats } from "./services/costAnomalyService.js";
+import { getPromptEvolutionSummary, getPromptVariantStats, getBestPromptVariant } from "./services/promptEvolutionService.js";
 
 const router = Router();
 
@@ -203,6 +204,15 @@ router.get("/api/cost-anomalies", async (req, res) => {
 
 router.get("/api/cost-stats", async (_req, res) => {
   res.json(await getCostStats());
+});
+
+// ── Prompt evolution: variant performance ────────────────────────
+router.get("/api/prompt-evolution", async (req, res) => {
+  const summary = await getPromptEvolutionSummary();
+  const promptType = req.query.type || "execution";
+  const stats = await getPromptVariantStats(promptType, req.query.repo || null);
+  const best = await getBestPromptVariant(promptType, req.query.repo || null);
+  res.json({ summary, stats, best });
 });
 
 // ── Task Queue Management ────────────────────────────────────────

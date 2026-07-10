@@ -615,6 +615,14 @@ async function initialize() {
       END IF;
     END $$;`,
 
+    // Prompt evolution: store the prompt configuration descriptor so the
+    // best-performing variant can be mapped back to actual settings
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='prompt_variants' AND column_name='prompt_content') THEN
+        ALTER TABLE prompt_variants ADD COLUMN prompt_content TEXT;
+      END IF;
+    END $$;`,
+
     // Decomposition flag on tasks
     `DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='decomposed') THEN

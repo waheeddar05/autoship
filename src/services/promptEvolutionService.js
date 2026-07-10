@@ -2,6 +2,7 @@
 // Prompt evolution: tracks prompt variants, measures merge rates,
 // and selects the best-performing prompt for each repo/task-type.
 
+import crypto from "node:crypto";
 import { pool } from "../db.js";
 import { logger } from "../logger.js";
 
@@ -14,14 +15,16 @@ import { logger } from "../logger.js";
  * @param {string} params.variantId - Unique identifier for this prompt version
  * @param {string} params.variantHash - Hash of the prompt content (for dedup)
  * @param {string} [params.repoFullName]
+ * @param {string} [params.promptContent] - The variant descriptor/content, so the
+ *   winning variant can be mapped back to an actual prompt configuration
  */
-export async function registerPromptVariant({ taskId, promptType, variantId, variantHash, repoFullName }) {
+export async function registerPromptVariant({ taskId, promptType, variantId, variantHash, repoFullName, promptContent }) {
   try {
     await pool.query(
-      `INSERT INTO prompt_variants (task_id, prompt_type, variant_id, variant_hash, repo_full_name)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (task_id, prompt_type) DO UPDATE SET variant_id = $3, variant_hash = $4`,
-      [taskId, promptType, variantId, variantHash, repoFullName]
+      `INSERT INTO prompt_variants (task_id, prompt_type, variant_id, variant_hash, repo_full_name, prompt_content)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (task_id, prompt_type) DO UPDATE SET variant_id = $3, variant_hash = $4, prompt_content = $6`,
+      [taskId, promptType, variantId, variantHash, repoFullName, promptContent || null]
     );
   } catch (err) {
     logger.warn({ taskId, promptType, err: err.message }, "Failed to register prompt variant");
@@ -96,17 +99,29 @@ export async function getBestPromptVariant(promptType, repoFullName = null) {
 }
 
 /**
- * Generate a variant ID from prompt content.
- * Uses a simple hash for tracking purposes.
+ * Generate a variant ID from prompt content (sha256-based — collision-safe
+ * for dedup, unlike the previous 32-bit string hash).
  */
 export function generateVariantHash(promptContent) {
-  let hash = 0;
-  for (let i = 0; i < promptContent.length; i++) {
-    const char = promptContent.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
+  const digest = crypto.createHash("sha256").update(promptContent).digest("hex");
+  return `v_${digest.slice(0, 12)}`;
+}
+
+/**
+ * Look up the stored descriptor/content for a variant id, so the best
+ * variant from getBestPromptVariant can be applied.
+ */
+export async function getVariantContent(variantId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT prompt_content FROM prompt_variants WHERE variant_id = $1 AND prompt_content IS NOT NULL LIMIT 1`,
+      [variantId]
+    );
+    return rows[0]?.prompt_content || null;
+  } catch (err) {
+    logger.warn({ variantId, err: err.message }, "Failed to get variant content");
+    return null;
   }
-  return `v_${Math.abs(hash).toString(36)}`;
 }
 
 /**

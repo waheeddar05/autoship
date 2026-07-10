@@ -36,6 +36,7 @@ import { checkCostAnomaly } from "./services/costAnomalyService.js";
 import { buildCodebaseGraph, formatGraphContext } from "./services/codebaseGraphService.js";
 import { findSimilarPRs, formatSimilarPRsContext } from "./services/prHistoryMiningService.js";
 import { getRepoLessons } from "./services/learningPipelineService.js";
+import { registerPromptVariant, generateVariantHash } from "./services/promptEvolutionService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1101,6 +1102,35 @@ export async function execute(taskRecord) {
       const activityCallback = (activity) => {
         addExecutionLog(taskId, "info", "claude_activity", `${repoLabel}${activity}`).catch(() => {});
       };
+
+      // Prompt evolution: register the prompt *configuration* used for this
+      // task as a variant. Hashing the full prompt would make every task its
+      // own variant; hashing the config descriptor lets merge rates compare
+      // across settings (model, plan framing, which context injections ran).
+      if (config.get("promptEvolutionEnabled") && !isIncremental) {
+        try {
+          const descriptor = JSON.stringify({
+            executionModel: executionModelOverride || config.get("executionModel"),
+            planInPrompt: config.get("debatePlanInPrompt") || "full",
+            planFramingMode: config.get("planFramingMode") || "mandatory",
+            planInjectionSkip: config.get("planInjectionSkipThreshold") || "none",
+            projectContext: !!config.get("projectContextEnabled"),
+            codebaseIndex: !!config.get("codebaseIndexEnabled"),
+            codebaseGraph: !!config.get("codebaseGraphEnabled"),
+            prHistoryMining: !!config.get("prHistoryMiningEnabled"),
+            repoLessons: !!config.get("repoLessonsEnabled"),
+          });
+          const variantHash = generateVariantHash(descriptor);
+          registerPromptVariant({
+            taskId,
+            promptType: "execution",
+            variantId: variantHash,
+            variantHash,
+            repoFullName: currentRepo.fullName,
+            promptContent: descriptor,
+          }).catch(() => {});
+        } catch (_) { /* non-fatal */ }
+      }
 
       const claudeStart = Date.now();
       const claudeResult = await runClaudeCode(prompt, repoPath, {
