@@ -585,6 +585,46 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Codebase Graph ─────────────────────────────────────────
+  codebaseGraphEnabled: {
+    envKey: "CODEBASE_GRAPH_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Codebase Dependency Graph",
+    description: "Build a module dependency graph per repo and include entry points/patterns in prompts",
+    group: "execution",
+  },
+
+  // ── PR History Mining ──────────────────────────────────────
+  prHistoryMiningEnabled: {
+    envKey: "PR_HISTORY_MINING_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Similar Past PRs",
+    description: "Find similar past PRs in the repo and include them in prompts",
+    group: "execution",
+  },
+
+  // ── Learning Pipeline (repo lessons) ───────────────────────
+  repoLessonsEnabled: {
+    envKey: "REPO_LESSONS_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Repo Lessons",
+    description: "Learn per-repo lessons from PR review feedback and inject them into prompts",
+    group: "execution",
+  },
+  repoLessonsDecayDays: {
+    envKey: "REPO_LESSONS_DECAY_DAYS",
+    default: 90,
+    type: "number",
+    label: "Lesson Retention (days)",
+    description: "Delete repo lessons older than this many days",
+    group: "execution",
+    min: 7,
+    max: 365,
+  },
+
   // ── Analytics / ROI (Feature 15) ──────────────────────────
   developerHourlyRate: {
     envKey: "DEVELOPER_HOURLY_RATE",

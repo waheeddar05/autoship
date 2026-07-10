@@ -247,8 +247,10 @@ export async function getLessonStats(repoFullName) {
  */
 export async function decayOldLessons(daysThreshold = 90) {
   try {
+    const days = Math.max(1, parseInt(daysThreshold, 10) || 90);
     const { rowCount } = await pool.query(
-      `DELETE FROM repo_lessons WHERE created_at < NOW() - INTERVAL '${daysThreshold} days'`
+      `DELETE FROM repo_lessons WHERE created_at < NOW() - ($1 || ' days')::interval`,
+      [String(days)]
     );
     if (rowCount > 0) {
       logger.info({ deleted: rowCount, daysThreshold }, "Decayed old repo lessons");

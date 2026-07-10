@@ -33,6 +33,9 @@ import { comparePredictedVsActual } from "./services/diffPreviewService.js";
 import { scoreComplexity, getTimeoutForComplexity } from "./complexity.js";
 import { resolveToken, getOrgAdminToken } from "./integrations/resolveToken.js";
 import { checkCostAnomaly } from "./services/costAnomalyService.js";
+import { buildCodebaseGraph, formatGraphContext } from "./services/codebaseGraphService.js";
+import { findSimilarPRs, formatSimilarPRsContext } from "./services/prHistoryMiningService.js";
+import { getRepoLessons } from "./services/learningPipelineService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1006,6 +1009,52 @@ export async function execute(taskRecord) {
           }
         } catch (err) {
           logger.warn({ taskId, repo: currentRepo.fullName, err: err.message }, "Historical insights failed (non-fatal)");
+        }
+      }
+
+      // ── Codebase dependency graph: entry points, modules, patterns ──
+      if (config.get("codebaseGraphEnabled") && !isIncremental) {
+        try {
+          const projectInfo = detectProjectType(repoPath);
+          const graph = await buildCodebaseGraph(repoPath, projectInfo.type);
+          const graphBlock = formatGraphContext(graph);
+          if (graphBlock) {
+            prompt = graphBlock + "\n\n---\n\n" + prompt;
+            await addExecutionLog(taskId, "info", "codebase_graph", `${repoLabel}Injected dependency graph (${graph.modules?.length || 0} modules)`);
+          }
+        } catch (err) {
+          logger.warn({ taskId, repo: currentRepo.fullName, err: err.message }, "Codebase graph injection failed (non-fatal)");
+        }
+      }
+
+      // ── Similar past PRs in this repo ────────────────────────────
+      if (config.get("prHistoryMiningEnabled") && !isIncremental && currentRepo.fullName) {
+        try {
+          const similarPRs = await findSimilarPRs({
+            repoFullName: currentRepo.fullName,
+            taskDescription: taskRecord.description || "",
+            taskName: taskRecord.name,
+          });
+          const similarBlock = formatSimilarPRsContext(similarPRs);
+          if (similarBlock) {
+            prompt = similarBlock + "\n\n---\n\n" + prompt;
+            await addExecutionLog(taskId, "info", "pr_history", `${repoLabel}Injected ${similarPRs.length} similar past PR(s)`);
+          }
+        } catch (err) {
+          logger.warn({ taskId, repo: currentRepo.fullName, err: err.message }, "PR history mining failed (non-fatal)");
+        }
+      }
+
+      // ── Lessons learned from past PR reviews in this repo ───────
+      if (config.get("repoLessonsEnabled") && !isIncremental && currentRepo.fullName) {
+        try {
+          const lessonsBlock = await getRepoLessons(currentRepo.fullName);
+          if (lessonsBlock) {
+            prompt = lessonsBlock + "\n\n---\n\n" + prompt;
+            await addExecutionLog(taskId, "info", "repo_lessons", `${repoLabel}Injected repo lessons from past reviews`);
+          }
+        } catch (err) {
+          logger.warn({ taskId, repo: currentRepo.fullName, err: err.message }, "Repo lessons injection failed (non-fatal)");
         }
       }
 

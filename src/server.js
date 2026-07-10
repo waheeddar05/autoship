@@ -33,6 +33,7 @@ import { scheduleWeeklyDigest } from "./weekly-digest.js";
 import { verifySlackSignature, openRequestChangesModal, updateApprovalMessage } from "./services/slackInteractiveService.js";
 import { apiLimiter, webhookLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { startCleanupSchedule } from "./services/staleTaskCleanupService.js";
+import { processReviewFeedback, decayOldLessons } from "./services/learningPipelineService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -626,6 +627,20 @@ app.post("/webhook/github", webhookLimiter, async (req, res) => {
       if (reviewComments.length === 0) return;
 
       const repo = payload.repository;
+
+      // Learning pipeline: categorize review feedback into per-repo lessons
+      // that get injected into future prompts for this repo
+      if (config.get("repoLessonsEnabled")) {
+        processReviewFeedback({
+          taskId: null, // linked lazily — lessons are keyed by repo, not task
+          repoFullName: repo.full_name,
+          prNumber: pr.number,
+          reviewComments,
+        }).catch((err) => {
+          logger.warn({ prNumber: pr.number, err: err.message }, "[GITHUB] Lesson extraction failed (non-fatal)");
+        });
+      }
+
       handlePrReview({
         prNumber: pr.number,
         prTitle: pr.title,
@@ -844,6 +859,15 @@ async function start() {
   const staleIntervalMs = Number(process.env.STALE_CLEANUP_INTERVAL_MS) || 30 * 60 * 1000;
   const staleCleanupTimer = startCleanupSchedule(staleIntervalMs);
   if (staleCleanupTimer.unref) staleCleanupTimer.unref();
+
+  // Daily decay of old repo lessons so prompt injections stay current
+  const lessonDecayTimer = setInterval(() => {
+    if (!config.get("repoLessonsEnabled")) return;
+    decayOldLessons(config.get("repoLessonsDecayDays")).catch((err) => {
+      logger.warn({ err: err.message }, "Repo lesson decay failed (non-fatal)");
+    });
+  }, 24 * 60 * 60 * 1000);
+  if (lessonDecayTimer.unref) lessonDecayTimer.unref();
 
   return httpServer;
 }
