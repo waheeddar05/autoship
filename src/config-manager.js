@@ -577,6 +577,16 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Slack Task Intake ──────────────────────────────────────
+  slackIntakeListId: {
+    envKey: "SLACK_INTAKE_LIST_ID",
+    default: "",
+    type: "text",
+    label: "Slack Intake List ID",
+    description: "ClickUp list where tasks created from Slack mentions land (empty = intake disabled)",
+    group: "slack",
+  },
+
   // ── GitHub Issues Task Source ──────────────────────────────
   githubIssuesEnabled: {
     envKey: "GITHUB_ISSUES_ENABLED",

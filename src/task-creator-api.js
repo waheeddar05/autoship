@@ -229,16 +229,15 @@ router.get("/api/task-creator/models", guard, async (req, res) => {
 });
 
 // ── POST /api/task-creator/generate ─────────────────────────────
-router.post("/api/task-creator/generate", guard, async (req, res) => {
-  try {
-    const { prompt, repoFullName, modelSpec } = req.body;
-    if (!prompt) return res.status(400).json({ error: "prompt is required" });
-    if (!modelSpec) return res.status(400).json({ error: "modelSpec is required" });
+/**
+ * Generate a structured task draft from a freeform prompt. Shared by the
+ * dashboard task creator and Slack intake.
+ */
+export async function generateTaskDraft({ prompt, repoFullName, modelSpec }) {
+  // Build repo context (best-effort)
+  const repoContext = await buildRepoContext(repoFullName);
 
-    // Build repo context (best-effort)
-    const repoContext = await buildRepoContext(repoFullName);
-
-    const systemPrompt = `You are a technical project manager creating a ClickUp task from a user request.
+  const systemPrompt = `You are a technical project manager creating a ClickUp task from a user request.
 Generate a well-structured task with:
 - A clear, concise title (max 80 chars)
 - A detailed markdown description with:
@@ -261,15 +260,24 @@ Respond ONLY with valid JSON in this exact format:
   "estimatedComplexity": "moderate"
 }`;
 
-    const messages = [{ role: "user", content: prompt }];
-    const result = await providerRegistry.chat(modelSpec, messages, {
-      systemPrompt,
-      temperature: 0.3,
-      maxTokens: 4000,
-      timeout: 60000,
-    });
+  const messages = [{ role: "user", content: prompt }];
+  const result = await providerRegistry.chat(modelSpec, messages, {
+    systemPrompt,
+    temperature: 0.3,
+    maxTokens: 4000,
+    timeout: 60000,
+  });
 
-    const task = parseLLMJson(result.content || result);
+  return parseLLMJson(result.content || result);
+}
+
+router.post("/api/task-creator/generate", guard, async (req, res) => {
+  try {
+    const { prompt, repoFullName, modelSpec } = req.body;
+    if (!prompt) return res.status(400).json({ error: "prompt is required" });
+    if (!modelSpec) return res.status(400).json({ error: "modelSpec is required" });
+
+    const task = await generateTaskDraft({ prompt, repoFullName, modelSpec });
     res.json(task);
   } catch (err) {
     logger.error({ err: err.message }, "Task generation failed");
@@ -396,11 +404,14 @@ router.get("/api/task-creator/stats", guard, async (req, res) => {
 });
 
 // ── POST /api/task-creator/create ───────────────────────────────
-router.post("/api/task-creator/create", guard, async (req, res) => {
-  try {
-    const { listId, title, description, tags, priority, repoFullName, assignees, triggerImplementation } = req.body;
-    if (!listId || !title) return res.status(400).json({ error: "listId and title are required" });
+/**
+ * Create a ClickUp task (with repo/Execution Mode custom fields and optional
+ * immediate pipeline trigger). Shared by the dashboard and Slack intake.
+ */
+export async function createClickUpTask({ listId, title, description, tags, priority, repoFullName, assignees, triggerImplementation, source = "task_creator" }) {
+  if (!listId || !title) throw new Error("listId and title are required");
 
+  {
     const taskBody = {
       name: title,
       markdown_description: description || "",
@@ -505,14 +516,24 @@ router.post("/api/task-creator/create", guard, async (req, res) => {
     if (triggerImplementation && created.id) {
       try {
         const fullTask = await getTaskDetails(created.id);
-        await handleTask(fullTask, { source: "task_creator" });
+        await handleTask(fullTask, { source });
         implementationTriggered = true;
       } catch (implErr) {
         logger.error({ err: implErr.message, taskId: created.id }, "Implementation trigger failed");
       }
     }
 
-    res.json({ ok: true, taskId: created.id, url: created.url, implementationTriggered });
+    return { ok: true, taskId: created.id, url: created.url, implementationTriggered };
+  }
+}
+
+router.post("/api/task-creator/create", guard, async (req, res) => {
+  try {
+    const { listId, title, description, tags, priority, repoFullName, assignees, triggerImplementation } = req.body;
+    if (!listId || !title) return res.status(400).json({ error: "listId and title are required" });
+
+    const result = await createClickUpTask({ listId, title, description, tags, priority, repoFullName, assignees, triggerImplementation });
+    res.json(result);
   } catch (err) {
     logger.error({ err: err.message }, "ClickUp task creation failed");
     res.status(500).json({ error: err.message });

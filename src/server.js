@@ -35,6 +35,7 @@ import { apiLimiter, webhookLimiter, authLimiter } from "./middleware/rateLimite
 import { startCleanupSchedule } from "./services/staleTaskCleanupService.js";
 import { processReviewFeedback, decayOldLessons } from "./services/learningPipelineService.js";
 import { startGitHubIssuesPoller } from "./sources/github-issues-source.js";
+import { handleAppMention, handleIntakeAction } from "./services/slackTaskIntakeService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -202,6 +203,34 @@ app.get("/api/auth/me", (req, res) => {
   res.status(401).json({ error: "Not authenticated" });
 });
 
+// ── Slack Events endpoint (app_mention → task intake) ────────────
+app.post("/api/slack/events", webhookLimiter, async (req, res) => {
+  try {
+    // Slack URL verification handshake
+    if (req.body?.type === "url_verification") {
+      return res.json({ challenge: req.body.challenge });
+    }
+
+    if (process.env.SLACK_SIGNING_SECRET && !verifySlackSignature(req)) {
+      logger.warn("[SLACK] Event signature verification failed");
+      return res.status(401).json({ error: "Invalid signature" });
+    }
+
+    res.status(200).send(); // fast ack — Slack retries after 3s otherwise
+
+    const event = req.body?.event;
+    if (req.body?.type === "event_callback" && event?.type === "app_mention" && !event.bot_id) {
+      logger.info({ channel: event.channel, user: event.user }, "[SLACK] App mention — routing to task intake");
+      handleAppMention(event).catch((err) => {
+        logger.error({ err: err.message }, "[SLACK] Task intake failed");
+      });
+    }
+  } catch (err) {
+    logger.error({ err: err.message }, "[SLACK] Event handling error");
+    if (!res.headersSent) res.status(200).send();
+  }
+});
+
 // ── Slack Interactions endpoint (before auth guard — Slack verifies via signing secret) ──
 app.post("/api/slack/interactions", webhookLimiter, async (req, res) => {
   try {
@@ -233,6 +262,15 @@ app.post("/api/slack/interactions", webhookLimiter, async (req, res) => {
         { action: action.action_id, clickupTaskId, user: userName },
         "[SLACK] Interactive action received"
       );
+
+      // Slack task intake buttons (Create & Run / Create Only / Cancel)
+      if (action.action_id?.startsWith("slack_task_")) {
+        res.status(200).send();
+        handleIntakeAction(action.action_id, action.value, userName, { channel: channelId, messageTs }).catch((err) => {
+          logger.error({ action: action.action_id, err: err.message }, "[SLACK] Intake action failed");
+        });
+        return;
+      }
 
       if (action.action_id === "approve_plan") {
         res.status(200).send();

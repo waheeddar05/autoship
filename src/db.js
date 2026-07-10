@@ -615,6 +615,20 @@ async function initialize() {
       END IF;
     END $$;`,
 
+    // Slack task intake: drafts awaiting confirmation buttons
+    `CREATE TABLE IF NOT EXISTS slack_task_drafts (
+      id SERIAL PRIMARY KEY,
+      channel TEXT NOT NULL,
+      thread_ts TEXT,
+      requested_by TEXT,
+      draft JSONB NOT NULL,
+      repo_full_name TEXT,
+      list_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending',
+      created_task_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
     // Clarifying-questions loop: pending questions awaiting author answers
     `CREATE TABLE IF NOT EXISTS clarification_requests (
       id SERIAL PRIMARY KEY,
