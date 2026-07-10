@@ -37,6 +37,8 @@ import { buildCodebaseGraph, formatGraphContext } from "./services/codebaseGraph
 import { findSimilarPRs, formatSimilarPRsContext } from "./services/prHistoryMiningService.js";
 import { getRepoLessons } from "./services/learningPipelineService.js";
 import { registerPromptVariant, generateVariantHash } from "./services/promptEvolutionService.js";
+import { getNextSubtask, getSubtaskProgress, completeSubtask, failSubtask, buildSubtaskPrompt, resetSubtasks } from "./services/taskDecompositionService.js";
+import { createMultiPrPlan, completePrPlanEntry, failPrPlanEntry, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -621,6 +623,78 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) 
   });
 }
 
+/**
+ * Execute a decomposed task as sequential Claude passes — one per subtask,
+ * all on the same branch/working tree so changes accumulate into one PR.
+ * Each pass gets the full assembled context prompt plus a focused subtask
+ * block with summaries of previously completed steps.
+ *
+ * Returns a { output, usage } shape compatible with runClaudeCode.
+ */
+async function runDecomposedSubtasks({ taskId, basePrompt, repoPath, modelOverride, onActivity, repoLabel = "" }) {
+  const outputs = [];
+  const aggregateUsage = {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    totalCostUsd: 0, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
+  };
+  let executed = 0;
+
+  // Task record for the parent description used in subtask prompts
+  const taskRow = await getTaskById(taskId);
+  const parentDescription = taskRow?.description || taskRow?.name || "";
+
+  for (;;) {
+    const subtask = await getNextSubtask(taskId);
+    if (!subtask) break;
+
+    const progress = await getSubtaskProgress(taskId);
+    await addExecutionLog(taskId, "info", "running_claude",
+      `${repoLabel}Subtask ${progress.completed + 1}/${progress.total}: ${subtask.name}`);
+
+    const subtaskBlock = await buildSubtaskPrompt(taskId, subtask, parentDescription);
+    const prompt = [
+      basePrompt,
+      "\n\n---\n",
+      "# FOCUS: Execute ONLY the current step below",
+      "This task is being implemented in ordered steps. Earlier steps are already done",
+      "(their changes are in the working tree). Implement ONLY the current step —",
+      "do not redo completed steps or jump ahead.\n",
+      subtaskBlock,
+    ].join("\n");
+
+    try {
+      const result = await runClaudeCode(prompt, repoPath, { modelOverride, onActivity, taskId });
+      const output = result.output || "";
+      outputs.push(`## ${subtask.name}\n${output}`);
+      executed++;
+
+      if (result.usage) {
+        aggregateUsage.inputTokens += result.usage.inputTokens || 0;
+        aggregateUsage.outputTokens += result.usage.outputTokens || 0;
+        aggregateUsage.cacheReadTokens += result.usage.cacheReadTokens || 0;
+        aggregateUsage.cacheCreationTokens += result.usage.cacheCreationTokens || 0;
+        aggregateUsage.totalCostUsd += result.usage.totalCostUsd || 0;
+        aggregateUsage.durationMs += result.usage.durationMs || 0;
+        aggregateUsage.durationApiMs += result.usage.durationApiMs || 0;
+        aggregateUsage.numTurns += result.usage.numTurns || 0;
+      }
+
+      await completeSubtask(subtask.id, { output: output.slice(0, 2000) });
+    } catch (err) {
+      await failSubtask(subtask.id, err.message);
+      await addExecutionLog(taskId, "error", "running_claude",
+        `${repoLabel}Subtask "${subtask.name}" failed: ${err.message}`);
+      throw new Error(`Subtask "${subtask.name}" failed: ${err.message}`);
+    }
+  }
+
+  logger.info({ taskId, executed }, "Decomposed execution complete");
+  return {
+    output: outputs.join("\n\n"),
+    usage: executed > 0 ? aggregateUsage : null,
+  };
+}
+
 // ── Main Task Execution Pipeline ────────────────────────────────
 
 /**
@@ -929,6 +1003,20 @@ export async function execute(taskRecord) {
     // align its changes accordingly (e.g. backend API changes → matching frontend).
     const previousRepoChanges = [];
 
+    // Multi-PR ledger: persist a dependency-ordered plan (each repo's PR
+    // depends on the previous one, matching sequential execution with
+    // cross-repo context) so progress survives restarts and is queryable.
+    let prPlanEntries = [];
+    if (!isIncremental && allRepos.length > 1) {
+      prPlanEntries = await createMultiPrPlan(taskId, allRepos.map((r, i) => ({
+        name: `PR for ${r.fullName}`,
+        repo: r.fullName,
+        type: "service",
+        dependsOn: i > 0 ? [i - 1] : [],
+        order: i,
+      })));
+    }
+
     for (const currentRepo of allRepos) {
       const repoPath = repoPaths[currentRepo.fullName];
       const repoLabel = allRepos.length > 1 ? `[${currentRepo.fullName}] ` : "";
@@ -1150,11 +1238,39 @@ export async function execute(taskRecord) {
       }
 
       const claudeStart = Date.now();
-      const claudeResult = await runClaudeCode(prompt, repoPath, {
-        modelOverride: executionModelOverride,
-        onActivity: activityCallback,
-        taskId,
-      });
+
+      // Decomposed tasks (single-repo only): run one Claude pass per subtask
+      // on the same branch — changes accumulate into a single commit/PR.
+      // Multi-repo tasks keep single-pass per repo (subtasks are task-level).
+      let claudeResult;
+      let useSubtasks = false;
+      if (!isIncremental && allRepos.length === 1 && taskRecord.decomposed) {
+        const subtaskState = await getSubtaskProgress(taskId);
+        if (subtaskState.total > 0) {
+          // Retry after a failed/partial attempt: the working tree was rebuilt,
+          // so previously completed subtasks must run again
+          if (subtaskState.pending === 0 || subtaskState.completed > 0 || subtaskState.failed > 0) {
+            await resetSubtasks(taskId);
+          }
+          useSubtasks = true;
+        }
+      }
+      if (useSubtasks) {
+        claudeResult = await runDecomposedSubtasks({
+          taskId,
+          basePrompt: prompt,
+          repoPath,
+          modelOverride: executionModelOverride,
+          onActivity: activityCallback,
+          repoLabel,
+        });
+      } else {
+        claudeResult = await runClaudeCode(prompt, repoPath, {
+          modelOverride: executionModelOverride,
+          onActivity: activityCallback,
+          taskId,
+        });
+      }
       const claudeOutput = claudeResult.output || claudeResult;
       const claudeUsage = claudeResult.usage || null;
       const claudeDuration = Date.now() - claudeStart;
@@ -1510,6 +1626,12 @@ export async function execute(taskRecord) {
         allPrUrls.push(prUrl);
         allPrNumbers.push(prNumber);
 
+        // Mark this repo's entry complete in the multi-PR ledger
+        const planEntry = prPlanEntries[allRepos.indexOf(currentRepo)];
+        if (planEntry) {
+          completePrPlanEntry(planEntry.id, { prUrl, prNumber, branchName }).catch(() => {});
+        }
+
         await addExecutionLog(taskId, "info", "creating_pr", `${repoLabel}PR created: ${prUrl}`);
         notifySlack("pr_created", { taskName: taskRecord.name, prUrl, prNumber, repo: currentRepo.fullName, taskDbId: taskId, ...slackCtx });
 
@@ -1670,6 +1792,13 @@ export async function execute(taskRecord) {
 
     await failTask(taskId, { error: error.message, lastStep: lastStepName });
     await addExecutionLog(taskId, "error", "pipeline", `Pipeline failed at ${lastStepName}: ${error.message}`);
+
+    // Multi-PR ledger: mark the entry that was in flight as failed so the
+    // plan status doesn't show it as pending forever
+    try {
+      const inFlight = await getNextPrToExecute(taskId);
+      if (inFlight) await failPrPlanEntry(inFlight.id, error.message);
+    } catch (_) {}
 
     // Store failure stage
     try {

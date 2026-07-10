@@ -21,6 +21,7 @@ import { DebateOrchestrator } from "../debate/debate-orchestrator.js";
 import { enqueueTask, createDebateSession, getSlackThreadTs, addExecutionLog } from "../task-queue.js";
 import { scoreComplexity } from "../complexity.js";
 import { assessComplexityWithLLM, combineComplexityScores } from "../services/llmComplexityService.js";
+import { analyzeForDecomposition, storeSubtasks } from "../services/taskDecompositionService.js";
 import { generateDiffPreview } from "../services/diffPreviewService.js";
 import { sendApprovalMessage } from "../services/slackInteractiveService.js";
 
@@ -477,6 +478,37 @@ async function runApproveFlow(task, qualityResult, cfg, { dbTaskId } = {}) {
       planSource: "skipped",
       debateUsed: false,
     };
+  }
+
+  // Step 2f: Task decomposition — break complex tasks into ordered subtasks
+  // that the execution engine runs as sequential Claude passes on one branch
+  if (config.get("taskDecompositionEnabled") && dbTaskId && codingPlan) {
+    try {
+      const decomposition = await analyzeForDecomposition({
+        taskDescription: taskDesc,
+        taskName: task.name,
+        complexityScore: complexityResult.score,
+        repoContext,
+        codingPlan,
+      });
+
+      if (decomposition.shouldDecompose && decomposition.subtasks.length > 0) {
+        const stored = await storeSubtasks(dbTaskId, decomposition.subtasks);
+        await pool.query(
+          `UPDATE tasks SET decomposed = TRUE, subtask_count = $1, updated_at = NOW() WHERE id = $2`,
+          [stored.length, dbTaskId]
+        );
+        logStep(task.id, flowType, "decomposition", "success", { subtasks: stored.length });
+        await addExecutionLog(dbTaskId, "info", "decomposition",
+          `Task decomposed into ${stored.length} subtasks: ${stored.map((s) => s.name).join(" → ")} (${decomposition.reasoning})`);
+      } else {
+        await addExecutionLog(dbTaskId, "info", "decomposition",
+          `Single-pass execution: ${decomposition.reasoning}`);
+      }
+    } catch (err) {
+      logStep(task.id, flowType, "decomposition", "fail", { error: err.message });
+      logger.warn({ taskId: task.id, err: err.message }, "Task decomposition failed (non-fatal — single-pass execution)");
+    }
   }
 
   // Step 2e: Generate diff preview if enabled

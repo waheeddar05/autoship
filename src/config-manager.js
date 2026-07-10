@@ -577,6 +577,16 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Task Decomposition ─────────────────────────────────────
+  taskDecompositionEnabled: {
+    envKey: "TASK_DECOMPOSITION_ENABLED",
+    default: false,
+    type: "boolean",
+    label: "Task Decomposition",
+    description: "Break complex tasks into ordered subtasks executed as sequential Claude passes",
+    group: "execution",
+  },
+
   // ── Prompt Evolution ───────────────────────────────────────
   promptEvolutionEnabled: {
     envKey: "PROMPT_EVOLUTION_ENABLED",

@@ -44,8 +44,11 @@ export async function getNextPrToExecute(parentTaskId) {
       [parentTaskId]
     );
 
+    // depends_on_indices refer to positions in the FULL ordered plan, so the
+    // index must come from allPrs — filtering first would renumber entries
+    // and break dependency checks once PRs complete out of order.
     const completedIndices = new Set(
-      allPrs.filter(p => p.state === "completed").map((_, i) => i)
+      allPrs.map((p, i) => (p.state === "completed" ? i : -1)).filter((i) => i >= 0)
     );
 
     for (const pr of allPrs) {

@@ -188,6 +188,27 @@ export async function failSubtask(subtaskId, errorMessage) {
 }
 
 /**
+ * Reset all subtasks of a parent task to pending. Used on task retry: the
+ * working tree is rebuilt from scratch, so previously "completed" subtasks
+ * must run again.
+ */
+export async function resetSubtasks(parentTaskId) {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE task_subtasks
+       SET state = 'pending', output = NULL, verification_result = NULL, error_message = NULL, completed_at = NULL
+       WHERE parent_task_id = $1`,
+      [parentTaskId]
+    );
+    logger.info({ parentTaskId, reset: rowCount }, "Subtasks reset to pending");
+    return rowCount;
+  } catch (err) {
+    logger.warn({ parentTaskId, err: err.message }, "Failed to reset subtasks");
+    return 0;
+  }
+}
+
+/**
  * Get all subtasks for a parent task with their current status.
  */
 export async function getSubtaskProgress(parentTaskId) {
@@ -249,9 +270,15 @@ export async function buildSubtaskPrompt(parentTaskId, subtask, taskDescription)
   parts.push(subtask.description);
 
   if (subtask.verification_steps) {
-    const steps = typeof subtask.verification_steps === "string"
-      ? JSON.parse(subtask.verification_steps)
-      : subtask.verification_steps;
+    let steps = [];
+    try {
+      steps = typeof subtask.verification_steps === "string"
+        ? JSON.parse(subtask.verification_steps)
+        : subtask.verification_steps;
+      if (!Array.isArray(steps)) steps = [];
+    } catch {
+      steps = [];
+    }
     if (steps.length > 0) {
       parts.push("\n## Verification");
       parts.push("After implementation, verify:");

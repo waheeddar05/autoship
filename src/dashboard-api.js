@@ -24,6 +24,8 @@ import { recordConfigChange, getConfigAuditLog, getConfigKeyHistory } from "./se
 import { getStaleTasks } from "./services/staleTaskCleanupService.js";
 import { getCostAnomalyHistory, getCostStats } from "./services/costAnomalyService.js";
 import { getPromptEvolutionSummary, getPromptVariantStats, getBestPromptVariant } from "./services/promptEvolutionService.js";
+import { getSubtaskProgress } from "./services/taskDecompositionService.js";
+import { getMultiPrStatus, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
 
 const router = Router();
 
@@ -204,6 +206,18 @@ router.get("/api/cost-anomalies", async (req, res) => {
 
 router.get("/api/cost-stats", async (_req, res) => {
   res.json(await getCostStats());
+});
+
+// ── Decomposition + multi-PR progress ────────────────────────────
+router.get("/api/tasks/:id/subtasks", async (req, res) => {
+  res.json(await getSubtaskProgress(parseInt(req.params.id, 10)));
+});
+
+router.get("/api/tasks/:id/multi-pr", async (req, res) => {
+  const taskId = parseInt(req.params.id, 10);
+  const status = await getMultiPrStatus(taskId);
+  const next = await getNextPrToExecute(taskId);
+  res.json({ ...status, next });
 });
 
 // ── Prompt evolution: variant performance ────────────────────────
