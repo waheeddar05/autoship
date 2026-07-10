@@ -32,6 +32,7 @@ import { recordTestRun, recordAutoFixAttempt as recordAutoFixMetric, recordDiffP
 import { comparePredictedVsActual } from "./services/diffPreviewService.js";
 import { scoreComplexity, getTimeoutForComplexity } from "./complexity.js";
 import { resolveToken, getOrgAdminToken } from "./integrations/resolveToken.js";
+import { checkCostAnomaly } from "./services/costAnomalyService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1500,6 +1501,12 @@ export async function execute(taskRecord) {
       if (url) {
         recordPROutcome(taskId, url, { merged: false, changesRequested: false, revisionCount: 0 }).catch(() => {});
       }
+    }
+
+    // Cost anomaly detection: compare this task's total spend against
+    // absolute limits and the rolling fleet average (alerts via Slack)
+    if (config.get("costTrackingEnabled")) {
+      checkCostAnomaly(taskId, taskRecord.name, allRepoNames?.[0]).catch(() => {});
     }
 
     // Notify workflow approval handler if this task came from workflow

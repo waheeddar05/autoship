@@ -258,6 +258,47 @@ export async function notifySlack(event, data = {}) {
   }
 }
 
+/**
+ * Send a plain mrkdwn text message to Slack, outside the event-builder system.
+ * Used by operational alerts (stale task cleanup, cost anomalies) that don't
+ * belong to a task lifecycle event. Fire-and-forget — never throws.
+ *
+ * @param {string} text - mrkdwn message text
+ * @param {string} [channel] - Channel override; defaults to configured channel
+ */
+export async function sendSlackText(text, channel) {
+  if (!SLACK_WEBHOOK_URL && !SLACK_BOT_TOKEN) return;
+
+  try {
+    const channelId = channel || config.get("slackChannel") || process.env.SLACK_CHANNEL_ID;
+
+    if (SLACK_BOT_TOKEN && channelId) {
+      const resp = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        },
+        body: JSON.stringify({ channel: channelId, text, unfurl_links: false }),
+      });
+      const result = await resp.json();
+      if (!result.ok) {
+        logger.warn({ error: result.error }, "Slack text message failed (non-fatal)");
+      }
+    } else if (SLACK_WEBHOOK_URL) {
+      const payload = { text };
+      if (channelId) payload.channel = channelId;
+      await fetch(SLACK_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+  } catch (err) {
+    logger.warn({ err: err.message }, "Slack text message failed (non-fatal)");
+  }
+}
+
 function formatDuration(ms) {
   if (!ms) return "N/A";
   if (ms < 1000) return `${ms}ms`;

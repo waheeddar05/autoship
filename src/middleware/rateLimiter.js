@@ -36,8 +36,10 @@ export function createRateLimiter({
   if (cleanupInterval.unref) cleanupInterval.unref();
 
   return function rateLimiterMiddleware(req, res, next) {
-    // Skip for authenticated users if configured
-    if (skipAuthenticated && req.session?.user) {
+    // Skip for authenticated users if configured.
+    // Passport exposes the user at req.user (session data lives under
+    // req.session.passport); also accept req.session.user for safety.
+    if (skipAuthenticated && (req.user || req.session?.user)) {
       return next();
     }
 

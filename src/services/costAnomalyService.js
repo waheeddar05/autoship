@@ -4,7 +4,7 @@
 
 import { pool } from "../db.js";
 import { logger } from "../logger.js";
-import { notifySlack } from "../slack-notifier.js";
+import { sendSlackText } from "../slack-notifier.js";
 
 const DEFAULT_ABSOLUTE_LIMIT = parseFloat(process.env.COST_ABSOLUTE_LIMIT || "5.00");
 const DEFAULT_MULTIPLIER = parseFloat(process.env.COST_ANOMALY_MULTIPLIER || "3.0");
@@ -59,7 +59,8 @@ export async function checkCostAnomaly(taskId, taskName, repoFullName) {
     // Check 2: Rolling average multiplier
     if (avgCost > 0 && currentCost > avgCost * DEFAULT_MULTIPLIER) {
       isAnomaly = true;
-      reason = `Cost ($${currentCost.toFixed(2)}) is ${(currentCost / avgCost).toFixed(1)}x the average ($${avgCost.toFixed(2)})`;
+      const multiplierReason = `Cost ($${currentCost.toFixed(2)}) is ${(currentCost / avgCost).toFixed(1)}x the average ($${avgCost.toFixed(2)})`;
+      reason = reason ? `${reason}; ${multiplierReason}` : multiplierReason;
     }
 
     // Check 3: Statistical outlier (> 2 standard deviations)
@@ -80,10 +81,10 @@ export async function checkCostAnomaly(taskId, taskName, repoFullName) {
 
       // Alert via Slack
       try {
-        await notifySlack({
-          text: `⚠️ *Cost Anomaly Detected*\nTask: ${taskName}\n${reason}\nTokens used: ${currentTokens.toLocaleString()}`,
-          channel: process.env.SLACK_ALERT_CHANNEL || process.env.SLACK_CHANNEL,
-        });
+        await sendSlackText(
+          `⚠️ *Cost Anomaly Detected*\nTask: ${taskName}\n${reason}\nTokens used: ${currentTokens.toLocaleString()}`,
+          process.env.SLACK_ALERT_CHANNEL || process.env.SLACK_CHANNEL_ID
+        );
       } catch (_) {}
     }
 

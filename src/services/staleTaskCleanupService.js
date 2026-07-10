@@ -4,7 +4,7 @@
 
 import { pool } from "../db.js";
 import { logger } from "../logger.js";
-import { notifySlack } from "../slack-notifier.js";
+import { sendSlackText } from "../slack-notifier.js";
 
 const STALE_THRESHOLDS = {
   received: 4 * 60 * 60 * 1000,     // 4 hours
@@ -57,9 +57,9 @@ export async function cleanupStaleTasks() {
 
       if (staleTasks.length > 0) {
         try {
-          await notifySlack({
-            text: `🧹 *Stale Task Cleanup*: ${staleTasks.length} task(s) stuck in '${state}' for >${(threshold / 3600000).toFixed(0)}h have been auto-failed.`,
-          });
+          await sendSlackText(
+            `🧹 *Stale Task Cleanup*: ${staleTasks.length} task(s) stuck in '${state}' for >${(threshold / 3600000).toFixed(0)}h have been auto-failed.`
+          );
         } catch (_) {}
       }
     } catch (err) {

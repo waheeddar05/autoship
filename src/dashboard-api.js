@@ -20,6 +20,9 @@ import { providerRegistry } from "./providers/provider-registry.js";
 import { requireRole } from "./rbac.js";
 import { pool } from "./db.js";
 import { scoreComplexity } from "./complexity.js";
+import { recordConfigChange, getConfigAuditLog, getConfigKeyHistory } from "./services/configAuditService.js";
+import { getStaleTasks } from "./services/staleTaskCleanupService.js";
+import { getCostAnomalyHistory, getCostStats } from "./services/costAnomalyService.js";
 
 const router = Router();
 
@@ -138,8 +141,17 @@ router.put("/api/config/:key", requireRole("ADMIN"), (req, res) => {
   const { value } = req.body;
 
   try {
+    const oldValue = config.get(key);
     config.set(key, value);
     logger.info({ key, value }, "Config updated via dashboard");
+
+    recordConfigChange({
+      userId: req.user?.email || req.user?.id,
+      source: "dashboard",
+      key,
+      oldValue,
+      newValue: value,
+    }).catch(() => {});
 
     broadcastSSE({ type: "config:changed", data: { key, value }, ts: new Date().toISOString() });
     res.json({ ok: true, key, value });
@@ -151,11 +163,46 @@ router.put("/api/config/:key", requireRole("ADMIN"), (req, res) => {
 router.delete("/api/config/:key", requireRole("ADMIN"), (req, res) => {
   const { key } = req.params;
   try {
+    const oldValue = config.get(key);
     config.reset(key);
+
+    recordConfigChange({
+      userId: req.user?.email || req.user?.id,
+      source: "dashboard",
+      key,
+      oldValue,
+      newValue: config.get(key),
+    }).catch(() => {});
+
     res.json({ ok: true, key, reverted: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// ── Config audit trail (ADMIN) ───────────────────────────────────
+router.get("/api/config-audit", requireRole("ADMIN"), async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+  res.json(await getConfigAuditLog(limit));
+});
+
+router.get("/api/config-audit/:key", requireRole("ADMIN"), async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || "20", 10), 100);
+  res.json(await getConfigKeyHistory(req.params.key, limit));
+});
+
+// ── Operational health: stale tasks + cost anomalies ────────────
+router.get("/api/stale-tasks", async (_req, res) => {
+  res.json(await getStaleTasks());
+});
+
+router.get("/api/cost-anomalies", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || "20", 10), 100);
+  res.json(await getCostAnomalyHistory(limit));
+});
+
+router.get("/api/cost-stats", async (_req, res) => {
+  res.json(await getCostStats());
 });
 
 // ── Task Queue Management ────────────────────────────────────────

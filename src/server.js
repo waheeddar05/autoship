@@ -31,6 +31,8 @@ import { getAssigneeIds } from "./assignee-resolver.js";
 import { recordPROutcome, updatePRMerged, updatePRChangesRequested } from "./learning.js";
 import { scheduleWeeklyDigest } from "./weekly-digest.js";
 import { verifySlackSignature, openRequestChangesModal, updateApprovalMessage } from "./services/slackInteractiveService.js";
+import { apiLimiter, webhookLimiter, authLimiter } from "./middleware/rateLimiter.js";
+import { startCleanupSchedule } from "./services/staleTaskCleanupService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -155,7 +157,8 @@ app.get("/login", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "login.html"));
 });
 
-// Google OAuth routes
+// Google OAuth routes (rate-limited: 10 attempts / 15 min per IP)
+app.use("/auth/google", authLimiter);
 app.get("/auth/google", passport.authenticate("google", {
   scope: ["profile", "email"],
   prompt: "select_account",
@@ -198,7 +201,7 @@ app.get("/api/auth/me", (req, res) => {
 });
 
 // ── Slack Interactions endpoint (before auth guard — Slack verifies via signing secret) ──
-app.post("/api/slack/interactions", async (req, res) => {
+app.post("/api/slack/interactions", webhookLimiter, async (req, res) => {
   try {
     if (process.env.SLACK_SIGNING_SECRET && !verifySlackSignature(req)) {
       logger.warn("[SLACK] Interaction signature verification failed");
@@ -280,6 +283,10 @@ app.post("/api/slack/interactions", async (req, res) => {
   }
 });
 
+// API rate limit — mounted before the auth guard so unauthenticated
+// probing is limited; authenticated users are skipped by the limiter.
+app.use("/api", apiLimiter);
+
 // Auth guard — if auth is enabled, require login for all routes below
 if (isAuthEnabled) {
   app.use(requireAuth);
@@ -360,7 +367,7 @@ app.get("/health", async (_req, res) => {
 });
 
 // ── ClickUp Webhook endpoint ─────────────────────────────────────
-app.post("/webhook/clickup", async (req, res) => {
+app.post("/webhook/clickup", webhookLimiter, async (req, res) => {
   res.status(200).json({ received: true });
 
   const payload = req.body;
@@ -533,7 +540,7 @@ app.post("/webhook/clickup", async (req, res) => {
 });
 
 // ── GitHub Webhook endpoint (PR review comments) ─────────────────
-app.post("/webhook/github", async (req, res) => {
+app.post("/webhook/github", webhookLimiter, async (req, res) => {
   res.status(200).json({ received: true });
 
   const payload = req.body;
@@ -832,6 +839,11 @@ async function start() {
 
   // Schedule weekly digest if enabled
   scheduleWeeklyDigest();
+
+  // Periodic stale-task cleanup: auto-fail tasks stuck in non-terminal states
+  const staleIntervalMs = Number(process.env.STALE_CLEANUP_INTERVAL_MS) || 30 * 60 * 1000;
+  const staleCleanupTimer = startCleanupSchedule(staleIntervalMs);
+  if (staleCleanupTimer.unref) staleCleanupTimer.unref();
 
   return httpServer;
 }
