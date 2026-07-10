@@ -615,6 +615,21 @@ async function initialize() {
       END IF;
     END $$;`,
 
+    // Golden-task replay harness results
+    `CREATE TABLE IF NOT EXISTS replay_results (
+      id SERIAL PRIMARY KEY,
+      task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+      repo_full_name TEXT,
+      model TEXT,
+      changed_files JSONB DEFAULT '[]',
+      expected_files JSONB DEFAULT '[]',
+      overlap_pct INTEGER,
+      diffstat TEXT,
+      duration_ms BIGINT,
+      cost_usd NUMERIC,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+
     // Slack task intake: drafts awaiting confirmation buttons
     `CREATE TABLE IF NOT EXISTS slack_task_drafts (
       id SERIAL PRIMARY KEY,
