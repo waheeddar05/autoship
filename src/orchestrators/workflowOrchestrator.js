@@ -22,6 +22,10 @@ import { enqueueTask, createDebateSession, getSlackThreadTs, addExecutionLog } f
 import { scoreComplexity } from "../complexity.js";
 import { assessComplexityWithLLM, combineComplexityScores } from "../services/llmComplexityService.js";
 import { analyzeForDecomposition, storeSubtasks } from "../services/taskDecompositionService.js";
+import {
+  generateClarifyingQuestions, formatClarificationComment,
+  createClarificationRequest, getClarificationAttempts,
+} from "../services/clarificationService.js";
 import { generateDiffPreview } from "../services/diffPreviewService.js";
 import { sendApprovalMessage } from "../services/slackInteractiveService.js";
 
@@ -129,6 +133,20 @@ export async function runWorkflow(task, { dbTaskId } = {}) {
   const belowThreshold = result.score < cfg.qualityScoreThreshold;
 
   if (belowThreshold && cfg.qualityCheckRejectFlow) {
+    // Clarifying-questions loop: ask the author targeted questions instead of
+    // hard-rejecting. Falls back to the reject flow when disabled, when the
+    // configured rounds are exhausted, or when questions can't be generated.
+    if (config.get("clarifyingQuestionsEnabled")) {
+      const attempts = await getClarificationAttempts(task.id);
+      const maxRounds = config.get("clarificationMaxRounds") || 1;
+      if (attempts < maxRounds) {
+        const clarifyResult = await runClarifyFlow(task, result, { dbTaskId, attempt: attempts + 1 });
+        if (clarifyResult) return clarifyResult;
+      } else if (dbTaskId) {
+        await addExecutionLog(dbTaskId, "warn", "quality_check", `Clarification rounds exhausted (${attempts}/${maxRounds}) — rejecting`);
+      }
+    }
+
     if (dbTaskId) await addExecutionLog(dbTaskId, "warn", "quality_check", `Task below threshold (${result.score} < ${cfg.qualityScoreThreshold}), running reject flow`);
     return await runRejectFlow(task, result, cfg);
   }
@@ -144,6 +162,67 @@ export async function runWorkflow(task, { dbTaskId } = {}) {
     "Quality check complete but applicable flow is disabled"
   );
   return { action: "no_action", score: result.score, issues: result.issues };
+}
+
+// ── Clarify Flow ─────────────────────────────────────────────────
+
+/**
+ * Ask the ticket author clarifying questions instead of rejecting.
+ * Returns the workflow result, or null when questions couldn't be
+ * generated/posted (caller falls back to the reject flow).
+ */
+async function runClarifyFlow(task, qualityResult, { dbTaskId, attempt } = {}) {
+  const flowType = "clarify";
+
+  const questions = await generateClarifyingQuestions({ task, qualityResult });
+  if (questions.length === 0) return null;
+
+  logStep(task.id, flowType, "post_questions", "start");
+  let commentId = null;
+  try {
+    const comment = formatClarificationComment(questions, qualityResult.score);
+    const response = await withRetry(() => postTaskComment(task.id, comment), { label: "postClarificationComment" });
+    commentId = response?.id || null;
+    logStep(task.id, flowType, "post_questions", "success", { questions: questions.length });
+  } catch (err) {
+    logStep(task.id, flowType, "post_questions", "fail", { error: err.message });
+    return null; // couldn't reach the author — fall back to reject
+  }
+
+  // Re-assign to task creator so they see the questions
+  try {
+    const creatorId = await getTaskCreatorId(task.id);
+    if (creatorId) {
+      await withRetry(() => updateTaskAssignees(task.id, [Number(creatorId)]), { label: "reassignCreatorClarify" });
+    }
+  } catch (err) {
+    logStep(task.id, flowType, "reassign_creator", "fail", { error: err.message });
+  }
+
+  try {
+    await withRetry(() => addTagToTask(task.id, "awaiting-clarification"), { label: "addClarifyTag" });
+  } catch (_) {}
+
+  await createClarificationRequest({
+    clickupTaskId: task.id,
+    dbTaskId,
+    questions,
+    commentId,
+    attempt,
+  });
+
+  if (dbTaskId) {
+    await addExecutionLog(dbTaskId, "info", "quality_check",
+      `Posted ${questions.length} clarifying question(s) to the author (round ${attempt}) — awaiting answers`);
+  }
+
+  return {
+    action: "awaiting_clarification",
+    score: qualityResult.score,
+    issues: qualityResult.issues,
+    summary: qualityResult.summary,
+    questions,
+  };
 }
 
 // ── Reject Flow ──────────────────────────────────────────────────

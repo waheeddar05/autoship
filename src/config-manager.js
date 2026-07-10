@@ -577,6 +577,26 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Clarifying Questions ───────────────────────────────────
+  clarifyingQuestionsEnabled: {
+    envKey: "CLARIFYING_QUESTIONS_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Clarifying Questions",
+    description: "Ask the ticket author targeted questions instead of hard-rejecting low-quality tasks",
+    group: "workflow",
+  },
+  clarificationMaxRounds: {
+    envKey: "CLARIFICATION_MAX_ROUNDS",
+    default: 1,
+    type: "number",
+    label: "Clarification Rounds",
+    description: "Question rounds before falling back to rejection",
+    group: "workflow",
+    min: 1,
+    max: 3,
+  },
+
   // ── Live Budget Enforcement ────────────────────────────────
   liveBudgetUsd: {
     envKey: "LIVE_BUDGET_USD",

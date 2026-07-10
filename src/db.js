@@ -615,6 +615,21 @@ async function initialize() {
       END IF;
     END $$;`,
 
+    // Clarifying-questions loop: pending questions awaiting author answers
+    `CREATE TABLE IF NOT EXISTS clarification_requests (
+      id SERIAL PRIMARY KEY,
+      clickup_task_id TEXT NOT NULL,
+      db_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+      questions JSONB NOT NULL DEFAULT '[]',
+      comment_id TEXT,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      state TEXT NOT NULL DEFAULT 'pending',
+      answer TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      answered_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_clarification_task ON clarification_requests(clickup_task_id, state)`,
+
     // Failure post-mortems: root-cause taxonomy per failed task
     `CREATE TABLE IF NOT EXISTS failure_causes (
       id SERIAL PRIMARY KEY,

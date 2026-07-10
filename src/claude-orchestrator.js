@@ -73,6 +73,20 @@ export async function handleTask(clickupTask, { source = "webhook" } = {}) {
         }).catch(() => {});
         return { task: enqueuedTask, duplicate: false, executed: false, workflow: workflowResult };
       }
+      if (workflowResult.action === "awaiting_clarification") {
+        // Questions were posted to the ticket author. Park the task in
+        // 'queued' (48h stale threshold, not planning's 2h) until the
+        // author replies — approvalHandler resumes the workflow then.
+        try {
+          const { pool } = await import("./db.js");
+          await pool.query("UPDATE tasks SET state = 'queued', updated_at = NOW() WHERE id = $1", [enqueuedTask.id]);
+        } catch (_) {}
+        await addExecutionLog(enqueuedTask.id, "info", "quality_check",
+          `Awaiting author's answers to ${workflowResult.questions?.length || 0} clarifying question(s)`);
+        logger.info({ taskId: clickupTask.id, dbId: enqueuedTask.id, score: workflowResult.score },
+          "Task awaiting clarification from author");
+        return { task: enqueuedTask, duplicate: false, executed: false, workflow: workflowResult };
+      }
       if (workflowResult.action === "approved_pending_plan") {
         // Task is already enqueued and in planning state — just log it
         await addExecutionLog(enqueuedTask.id, "info", "planning", "Plan generated, awaiting approval before implementation");

@@ -6,13 +6,18 @@ import { pool } from "../db.js";
 import { logger } from "../logger.js";
 import {
   getTaskComments,
+  getTaskDetails,
   postTaskComment,
   updateTaskStatus,
   removeTagFromTask,
 } from "../clickup-client.js";
 import { execute } from "../execution-engine.js";
-import { approveTask, addExecutionLog } from "../task-queue.js";
+import { approveTask, addExecutionLog, failTask, getTaskById } from "../task-queue.js";
 import { config } from "../config-manager.js";
+import { runWorkflow } from "../orchestrators/workflowOrchestrator.js";
+import {
+  getPendingClarification, recordClarificationAnswer, buildEnrichedDescription,
+} from "../services/clarificationService.js";
 
 const POLL_INTERVAL_MS = Number(process.env.APPROVAL_POLL_INTERVAL_MS) || 5 * 60 * 1000; // 5 minutes
 const MAX_POLL_ATTEMPTS = Number(process.env.APPROVAL_MAX_POLL_ATTEMPTS) || 288; // 24 hours
@@ -32,6 +37,22 @@ const activePollers = new Map(); // clickupTaskId → { intervalId, attempts, pl
 export async function handleCommentWebhook(payload) {
   const taskId = payload.task_id;
   if (!taskId) return;
+
+  // Clarification answers take precedence — they happen pre-plan, so no
+  // approval row exists yet for these tasks
+  const clarification = await getPendingClarification(taskId);
+  if (clarification) {
+    const commentInfo = extractCommentInfo(payload);
+    const isOwnComment = commentInfo?.id && commentInfo.id === clarification.comment_id;
+    const postedBefore = commentInfo?.date && clarification.created_at &&
+      Number(commentInfo.date) <= new Date(clarification.created_at).getTime();
+    if (commentInfo?.text && !isOwnComment && !postedBefore) {
+      await processClarificationAnswer(taskId, clarification, commentInfo.text).catch((err) => {
+        logger.error({ taskId, err: err.message }, "Clarification answer processing failed");
+      });
+      return;
+    }
+  }
 
   // Check if this task has a pending approval
   const approval = await getPendingApproval(taskId);
@@ -84,6 +105,82 @@ export async function handleCommentWebhook(payload) {
     planCommentId: approval.plan_comment_id,
   }, "Approval detected via webhook — comment posted after plan");
   await processApproval(taskId, approval, cfg);
+}
+
+// ── Clarification Answers ────────────────────────────────────────
+
+/**
+ * The ticket author replied to AutoShip's clarifying questions: record the
+ * answer, enrich the task description with the Q&A, and re-run the quality
+ * workflow with the enriched task.
+ */
+async function processClarificationAnswer(clickupTaskId, request, answerText) {
+  logger.info({ taskId: clickupTaskId, requestId: request.id }, "Clarification answer received — re-evaluating task");
+
+  await recordClarificationAnswer(request.id, answerText);
+  try {
+    await removeTagFromTask(clickupTaskId, "awaiting-clarification");
+  } catch (_) {}
+
+  let questions = [];
+  try {
+    questions = typeof request.questions === "string" ? JSON.parse(request.questions) : request.questions || [];
+  } catch (_) {}
+
+  const task = await getTaskDetails(clickupTaskId);
+  const enriched = buildEnrichedDescription(task.markdownDescription || task.description, questions, answerText);
+
+  const dbTaskId = request.db_task_id;
+  if (dbTaskId) {
+    await pool.query(
+      `UPDATE tasks SET modified_description = $1, updated_at = NOW() WHERE id = $2`,
+      [enriched, dbTaskId]
+    ).catch(() => {});
+    await addExecutionLog(dbTaskId, "info", "quality_check", "Clarification answers received — re-running quality workflow");
+    // Back to planning for the re-evaluation (state machine tolerant)
+    await pool.query(
+      `UPDATE tasks SET state = 'planning', updated_at = NOW() WHERE id = $1 AND state IN ('queued', 'received')`,
+      [dbTaskId]
+    ).catch(() => {});
+  }
+
+  try {
+    await postTaskComment(clickupTaskId, "✅ Thanks — re-evaluating the task with your answers.");
+  } catch (_) {}
+
+  // Re-run the workflow with the enriched description standing in for the original
+  const enrichedTask = { ...task, description: enriched, markdownDescription: enriched };
+  const workflowResult = await runWorkflow(enrichedTask, { dbTaskId });
+  await handlePostClarificationOutcome(dbTaskId, workflowResult);
+}
+
+/** Mirror of handleTask's outcome routing for the post-clarification re-run. */
+async function handlePostClarificationOutcome(dbTaskId, workflowResult) {
+  if (!dbTaskId || !workflowResult) return;
+
+  if (workflowResult.action === "rejected") {
+    await failTask(dbTaskId, {
+      error: `Rejected by quality check after clarification (score: ${workflowResult.score})`,
+      lastStep: "quality_check",
+    }).catch(() => {});
+    return;
+  }
+
+  if (workflowResult.action === "execute_directly") {
+    const task = await getTaskById(dbTaskId);
+    if (task) execute(task).catch((err) => logger.error({ dbTaskId, err: err.message }, "Post-clarification execution failed"));
+    return;
+  }
+
+  // awaiting_clarification (another round) and approved_pending_plan need no
+  // action here — their own flows take over. For skipped/no_action/error,
+  // honor the execution mode like handleTask does.
+  if (["awaiting_clarification", "approved_pending_plan"].includes(workflowResult.action)) return;
+
+  if (config.get("executionMode") === "auto") {
+    const task = await getTaskById(dbTaskId);
+    if (task) execute(task).catch((err) => logger.error({ dbTaskId, err: err.message }, "Post-clarification auto-execution failed"));
+  }
 }
 
 // ── Polling-based Approval Detection ─────────────────────────────
