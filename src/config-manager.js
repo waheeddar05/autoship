@@ -643,6 +643,24 @@ const SCHEMA = {
     max: 3,
   },
 
+  // ── Visual Verification ────────────────────────────────────
+  visualVerificationEnabled: {
+    envKey: "VISUAL_VERIFICATION_ENABLED",
+    default: false,
+    type: "boolean",
+    label: "Visual Verification",
+    description: "For React/Next repos: boot the dev server after code gen and attach Playwright screenshots to the PR (requires playwright installed)",
+    group: "execution",
+  },
+  visualVerificationRoutes: {
+    envKey: "VISUAL_VERIFICATION_ROUTES",
+    default: "/",
+    type: "list",
+    label: "Screenshot Routes",
+    description: "Comma-separated routes to screenshot (e.g. /,/login,/dashboard)",
+    group: "execution",
+  },
+
   // ── Live Budget Enforcement ────────────────────────────────
   liveBudgetUsd: {
     envKey: "LIVE_BUDGET_USD",

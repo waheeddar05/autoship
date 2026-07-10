@@ -41,6 +41,7 @@ import { getNextSubtask, getSubtaskProgress, completeSubtask, failSubtask, build
 import { createMultiPrPlan, completePrPlanEntry, failPrPlanEntry, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
 import { reviewGeneratedCode, formatReviewFindings } from "./services/selfReviewService.js";
 import { analyzeFailure } from "./services/failureAnalysisService.js";
+import { captureScreenshots, formatScreenshotsMarkdown, isFrontendProject } from "./services/visualVerificationService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1646,6 +1647,31 @@ export async function execute(taskRecord) {
         }
       }
 
+      // ── Visual verification: screenshot frontend changes for the PR ──
+      let visualMarkdown = "";
+      if (config.get("visualVerificationEnabled") && !isIncremental) {
+        try {
+          const projectInfo = detectProjectType(repoPath);
+          if (isFrontendProject(projectInfo)) {
+            await addExecutionLog(taskId, "info", "visual_verification", `${repoLabel}Booting dev server for screenshots...`);
+            const result = await captureScreenshots({ repoPath, projectInfo, taskId });
+            if (result?.screenshots?.length) {
+              // .autoship/ is gitignored — force-add so raw URLs resolve on the branch
+              await runCommand("git", ["add", "-f", ".autoship/screenshots"], repoPath);
+              await runCommand("git", ["commit", "-m", "chore: visual verification screenshots"], repoPath, { env: gitAuthorEnv });
+              await runCommand("git", ["push", "origin", branchName], repoPath, { timeout: 60_000 });
+              visualMarkdown = formatScreenshotsMarkdown(result.screenshots, currentRepo.fullName, branchName);
+              await addExecutionLog(taskId, "info", "visual_verification",
+                `${repoLabel}Captured ${result.screenshots.length} screenshot(s) for the PR`);
+            } else {
+              await addExecutionLog(taskId, "info", "visual_verification", `${repoLabel}No screenshots captured (server/playwright unavailable)`);
+            }
+          }
+        } catch (err) {
+          logger.warn({ taskId, err: err.message }, "Visual verification failed (non-fatal)");
+        }
+      }
+
       // Step 7: Create PR (fresh only) or add comment (incremental)
       let prUrl = taskRecord.pr_url;
       let prNumber = taskRecord.pr_number;
@@ -1660,6 +1686,11 @@ export async function execute(taskRecord) {
         // Append test results to PR body
         if (testResultsSummary) {
           prBody += `\n\n## Test Results\n${testResultsSummary}`;
+        }
+
+        // Append visual verification screenshots
+        if (visualMarkdown) {
+          prBody += `\n\n${visualMarkdown}`;
         }
 
         // Confidence-based draft PRs: a NON-BLOCKING self-review scores the
