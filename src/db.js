@@ -615,6 +615,22 @@ async function initialize() {
       END IF;
     END $$;`,
 
+    // Failure post-mortems: root-cause taxonomy per failed task
+    `CREATE TABLE IF NOT EXISTS failure_causes (
+      id SERIAL PRIMARY KEY,
+      task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+      task_name TEXT,
+      repo_full_name TEXT,
+      failure_stage TEXT,
+      category TEXT NOT NULL,
+      summary TEXT,
+      recommendation TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_failure_causes_category ON failure_causes(category)`,
+    `CREATE INDEX IF NOT EXISTS idx_failure_causes_created ON failure_causes(created_at)`,
+
     // Prompt evolution: store the prompt configuration descriptor so the
     // best-performing variant can be mapped back to actual settings
     `DO $$ BEGIN

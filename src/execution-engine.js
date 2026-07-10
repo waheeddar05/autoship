@@ -40,6 +40,7 @@ import { registerPromptVariant, generateVariantHash } from "./services/promptEvo
 import { getNextSubtask, getSubtaskProgress, completeSubtask, failSubtask, buildSubtaskPrompt, resetSubtasks } from "./services/taskDecompositionService.js";
 import { createMultiPrPlan, completePrPlanEntry, failPrPlanEntry, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
 import { reviewGeneratedCode, formatReviewFindings } from "./services/selfReviewService.js";
+import { analyzeFailure } from "./services/failureAnalysisService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1916,6 +1917,15 @@ export async function execute(taskRecord) {
       const { pool } = await import("./db.js");
       await pool.query("UPDATE tasks SET failure_stage = $1 WHERE id = $2", [lastStepName, taskId]);
     } catch (_) {}
+
+    // Failure post-mortem: classify the root cause (fire-and-forget)
+    analyzeFailure({
+      taskId,
+      taskName: taskRecord.name,
+      repoFullName: taskRecord.repo_full_name,
+      failureStage: lastStepName,
+      errorMessage: error.message,
+    }).catch(() => {});
 
     metrics.taskFailed({
       taskId: taskRecord.clickup_task_id,

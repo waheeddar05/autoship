@@ -26,6 +26,7 @@ import { getCostAnomalyHistory, getCostStats } from "./services/costAnomalyServi
 import { getPromptEvolutionSummary, getPromptVariantStats, getBestPromptVariant } from "./services/promptEvolutionService.js";
 import { getSubtaskProgress } from "./services/taskDecompositionService.js";
 import { getMultiPrStatus, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
+import { getFailurePareto, getRecentFailures } from "./services/failureAnalysisService.js";
 
 const router = Router();
 
@@ -206,6 +207,14 @@ router.get("/api/cost-anomalies", async (req, res) => {
 
 router.get("/api/cost-stats", async (_req, res) => {
   res.json(await getCostStats());
+});
+
+// ── Failure post-mortems ─────────────────────────────────────────
+router.get("/api/failure-causes", async (req, res) => {
+  const days = parseInt(req.query.days || "30", 10);
+  const pareto = await getFailurePareto(days);
+  const recent = await getRecentFailures(parseInt(req.query.limit || "20", 10));
+  res.json({ ...pareto, recent });
 });
 
 // ── Decomposition + multi-PR progress ────────────────────────────
