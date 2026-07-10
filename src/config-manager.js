@@ -577,6 +577,18 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Live Budget Enforcement ────────────────────────────────
+  liveBudgetUsd: {
+    envKey: "LIVE_BUDGET_USD",
+    default: 0,
+    type: "number",
+    label: "Per-Run Budget ($)",
+    description: "Kill a Claude run when estimated spend crosses this (0 = unlimited). Retrying grants a fresh budget.",
+    group: "execution",
+    min: 0,
+    max: 500,
+  },
+
   // ── Self-Review (non-blocking, draft PR gate only) ─────────
   selfReviewEnabled: {
     envKey: "SELF_REVIEW_ENABLED",

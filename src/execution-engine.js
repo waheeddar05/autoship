@@ -9,7 +9,7 @@ import { logger } from "./logger.js";
 import { postTaskComment, updateTaskStatus, removeTagFromTask } from "./clickup-client.js";
 import { config } from "./config-manager.js";
 import { metrics } from "./metrics.js";
-import { notifySlack } from "./slack-notifier.js";
+import { notifySlack, sendSlackText } from "./slack-notifier.js";
 import {
   startTask, completeTask, failTask, updateTaskStep, updateTaskRepo,
   addExecutionLog, addTaskMessage, updatePrReview,
@@ -441,7 +441,20 @@ function unregisterProcess(taskId, proc) {
   if (set.size === 0) activeProcesses.delete(taskId);
 }
 
-function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) {
+// Approximate per-token pricing (USD) for live budget enforcement only —
+// authoritative cost still comes from Claude Code's total_cost_usd
+const MODEL_PRICING = [
+  { match: /opus/i, input: 15e-6, output: 75e-6 },
+  { match: /sonnet/i, input: 3e-6, output: 15e-6 },
+  { match: /haiku/i, input: 0.8e-6, output: 4e-6 },
+];
+
+function estimateModelCost(model, inputTokens, outputTokens) {
+  const p = MODEL_PRICING.find((x) => x.match.test(model || "")) || MODEL_PRICING[1];
+  return inputTokens * p.input + outputTokens * p.output;
+}
+
+function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId, budgetUsd } = {}) {
   return new Promise((resolve, reject) => {
     const claudePath = process.env.CLAUDE_CODE_PATH || "claude";
     // executionModel is the canonical config for which model to use for implementation.
@@ -493,6 +506,12 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) 
     let streamOutputBytes = 0;
     let lineBuffer = "";
 
+    // Live budget enforcement (streaming mode only): accumulate tokens from
+    // per-message usage and kill the run when estimated spend crosses budget
+    let liveInputTokens = 0;
+    let liveOutputTokens = 0;
+    let liveEstimatedCost = 0;
+
     const heartbeat = setInterval(() => {
       const elapsed = Math.round((Date.now() - lastActivity) / 1000);
       const size = useStreaming ? streamOutputBytes : output.length;
@@ -522,6 +541,21 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) 
           if (!line.trim()) continue;
           try {
             const event = JSON.parse(line);
+
+            // Live budget: track spend as each assistant message streams in
+            if (budgetUsd > 0 && event.type === "assistant" && event.message?.usage && !proc.budgetExceeded) {
+              const u = event.message.usage;
+              liveInputTokens += (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+              liveOutputTokens += u.output_tokens || 0;
+              liveEstimatedCost = estimateModelCost(model, liveInputTokens, liveOutputTokens);
+              if (liveEstimatedCost > budgetUsd) {
+                proc.budgetExceeded = true;
+                proc.budgetDetail = { estimated: liveEstimatedCost, budget: budgetUsd, inputTokens: liveInputTokens, outputTokens: liveOutputTokens };
+                logger.warn({ taskId, ...proc.budgetDetail }, "Live budget exceeded — terminating Claude Code run");
+                try { onActivity(`💸 Budget exceeded (~$${liveEstimatedCost.toFixed(2)} > $${budgetUsd.toFixed(2)}) — stopping run`); } catch (_) {}
+                try { proc.kill("SIGTERM"); } catch (_) {}
+              }
+            }
 
             // Extract tool_use events for real-time file activity
             if (event.type === "assistant" && event.message?.content) {
@@ -575,7 +609,13 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) 
       const totalBytes = useStreaming ? streamOutputBytes : output.length;
       logger.info({ code, signal, outputLength: totalBytes }, "Claude Code process exited");
 
-      if (proc.cancelled) {
+      if (proc.budgetExceeded) {
+        const d = proc.budgetDetail || {};
+        reject(new Error(
+          `Budget exceeded: run stopped at ~$${(d.estimated || 0).toFixed(2)} (budget $${(d.budget || 0).toFixed(2)}, ` +
+          `${((d.inputTokens || 0) + (d.outputTokens || 0)).toLocaleString()} tokens). Retry the task to approve continuing with a fresh budget.`
+        ));
+      } else if (proc.cancelled) {
         reject(new Error("Execution cancelled by user"));
       } else if (code !== 0) {
         const timeoutHint = (code === 143 || signal === "SIGTERM")
@@ -632,7 +672,7 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) 
  *
  * Returns a { output, usage } shape compatible with runClaudeCode.
  */
-async function runDecomposedSubtasks({ taskId, basePrompt, repoPath, modelOverride, onActivity, repoLabel = "" }) {
+async function runDecomposedSubtasks({ taskId, basePrompt, repoPath, modelOverride, onActivity, repoLabel = "", budgetUsd = 0 }) {
   const outputs = [];
   const aggregateUsage = {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
@@ -652,6 +692,18 @@ async function runDecomposedSubtasks({ taskId, basePrompt, repoPath, modelOverri
     await addExecutionLog(taskId, "info", "running_claude",
       `${repoLabel}Subtask ${progress.completed + 1}/${progress.total}: ${subtask.name}`);
 
+    // Budget is shared across the whole run: each subtask gets what's left
+    let remainingBudget = 0;
+    if (budgetUsd > 0) {
+      remainingBudget = budgetUsd - aggregateUsage.totalCostUsd;
+      if (remainingBudget <= 0) {
+        throw new Error(
+          `Budget exceeded: $${aggregateUsage.totalCostUsd.toFixed(2)} spent across ${executed} subtask(s) ` +
+          `(budget $${budgetUsd.toFixed(2)}). Retry the task to approve continuing with a fresh budget.`
+        );
+      }
+    }
+
     const subtaskBlock = await buildSubtaskPrompt(taskId, subtask, parentDescription);
     const prompt = [
       basePrompt,
@@ -664,7 +716,7 @@ async function runDecomposedSubtasks({ taskId, basePrompt, repoPath, modelOverri
     ].join("\n");
 
     try {
-      const result = await runClaudeCode(prompt, repoPath, { modelOverride, onActivity, taskId });
+      const result = await runClaudeCode(prompt, repoPath, { modelOverride, onActivity, taskId, budgetUsd: remainingBudget });
       const output = result.output || "";
       outputs.push(`## ${subtask.name}\n${output}`);
       executed++;
@@ -1256,6 +1308,10 @@ export async function execute(taskRecord) {
           useSubtasks = true;
         }
       }
+      // Per-run spend budget (0 = unlimited). A retry after a budget failure
+      // is the user's approval to continue — it gets a fresh budget.
+      const liveBudgetUsd = Number(config.get("liveBudgetUsd")) || 0;
+
       if (useSubtasks) {
         claudeResult = await runDecomposedSubtasks({
           taskId,
@@ -1264,12 +1320,14 @@ export async function execute(taskRecord) {
           modelOverride: executionModelOverride,
           onActivity: activityCallback,
           repoLabel,
+          budgetUsd: liveBudgetUsd,
         });
       } else {
         claudeResult = await runClaudeCode(prompt, repoPath, {
           modelOverride: executionModelOverride,
           onActivity: activityCallback,
           taskId,
+          budgetUsd: liveBudgetUsd,
         });
       }
       const claudeOutput = claudeResult.output || claudeResult;
@@ -1833,6 +1891,18 @@ export async function execute(taskRecord) {
 
     await failTask(taskId, { error: error.message, lastStep: lastStepName });
     await addExecutionLog(taskId, "error", "pipeline", `Pipeline failed at ${lastStepName}: ${error.message}`);
+
+    // Budget breaches get an explicit approve-to-continue notification:
+    // retrying the task from the dashboard grants a fresh budget
+    if (error.message.startsWith("Budget exceeded")) {
+      sendSlackText(
+        `💸 *Budget Exceeded*\nTask: ${taskRecord.name}\n${error.message}\nRetry the task from the dashboard to approve continuing.`
+      ).catch(() => {});
+      postTaskComment(
+        taskRecord.clickup_task_id,
+        `💸 **Budget exceeded** — ${error.message}`
+      ).catch(() => {});
+    }
 
     // Multi-PR ledger: mark the entry that was in flight as failed so the
     // plan status doesn't show it as pending forever
