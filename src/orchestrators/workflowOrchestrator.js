@@ -20,6 +20,7 @@ import { indexRepository, getRelevantContext } from "../codebase-index.js";
 import { DebateOrchestrator } from "../debate/debate-orchestrator.js";
 import { enqueueTask, createDebateSession, getSlackThreadTs, addExecutionLog } from "../task-queue.js";
 import { scoreComplexity } from "../complexity.js";
+import { assessComplexityWithLLM, combineComplexityScores } from "../services/llmComplexityService.js";
 import { generateDiffPreview } from "../services/diffPreviewService.js";
 import { sendApprovalMessage } from "../services/slackInteractiveService.js";
 
@@ -41,6 +42,7 @@ async function getWorkflowConfig() {
       : row.approval_keywords || [],
     needsRevisionTag: row.needs_revision_tag,
     requireRepoField: row.require_repo_field ?? false,
+    debateComplexityThreshold: row.debate_complexity_threshold || "complex",
   };
 }
 
@@ -344,17 +346,46 @@ async function runApproveFlow(task, qualityResult, cfg, { dbTaskId } = {}) {
   let codingPlan;
   let planSource = "standard"; // track origin: "debate" or "standard"
 
-  // Compute task complexity to determine if debate is warranted
+  // Compute task complexity to determine if debate is warranted.
+  // Keyword scoring is instant; when llmComplexityEnabled, an LLM assessment
+  // (cheap model, keyword score passed as a hint) is blended in 30/70.
   const taskDesc = task.markdownDescription || task.description || task.name || "";
-  const complexityResult = scoreComplexity(taskDesc, codebaseIndex);
+  const keywordResult = scoreComplexity(taskDesc, codebaseIndex);
+  let complexityResult = keywordResult;
+
+  if (config.get("llmComplexityEnabled")) {
+    try {
+      const llmResult = await assessComplexityWithLLM({
+        taskName: task.name,
+        taskDescription: taskDesc,
+        repoContext,
+        keywordScore: keywordResult,
+      });
+      complexityResult = combineComplexityScores(keywordResult, llmResult);
+      if (dbTaskId) {
+        await pool.query(
+          `UPDATE tasks SET llm_complexity_score = $1, complexity_risks = $2, updated_at = NOW() WHERE id = $3`,
+          [llmResult.score, JSON.stringify(llmResult.risks || []), dbTaskId]
+        ).catch(() => {});
+      }
+    } catch (err) {
+      logger.warn({ taskId: task.id, err: err.message }, "LLM complexity assessment failed — using keyword score");
+    }
+  }
+
   const taskComplexity = complexityResult.level;
 
-  if (dbTaskId) await addExecutionLog(dbTaskId, "info", "complexity", `Task complexity: ${complexityResult.level} (score: ${complexityResult.score}/100)`);
+  if (dbTaskId) {
+    const detail = complexityResult.method === "combined"
+      ? ` (keyword ${complexityResult.keywordScore}, LLM ${complexityResult.llmScore}${complexityResult.reasoning ? ` — ${complexityResult.reasoning}` : ""})`
+      : "";
+    await addExecutionLog(dbTaskId, "info", "complexity", `Task complexity: ${complexityResult.level} (score: ${complexityResult.score}/100)${detail}`);
+  }
 
-  // Check debate complexity threshold from workflow config
+  // Check debate complexity threshold from workflow config (cfg was loaded
+  // by runWorkflow and passed in — the old second query dropped the field)
   const complexityOrder = ["simple", "medium", "complex", "critical"];
-  const wfConfig = await getWorkflowConfig();
-  const debateThreshold = wfConfig?.debate_complexity_threshold || "complex";
+  const debateThreshold = cfg?.debateComplexityThreshold || "complex";
   const taskComplexityIdx = complexityOrder.indexOf(taskComplexity);
   const thresholdIdx = complexityOrder.indexOf(debateThreshold);
   const meetsDebateThreshold = debateThreshold !== "disabled" && taskComplexityIdx >= 0 && thresholdIdx >= 0 && taskComplexityIdx >= thresholdIdx;

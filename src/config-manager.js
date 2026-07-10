@@ -585,6 +585,16 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── LLM Complexity Assessment ──────────────────────────────
+  llmComplexityEnabled: {
+    envKey: "LLM_COMPLEXITY_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "LLM Complexity Scoring",
+    description: "Blend an LLM complexity assessment (cheap model) with keyword scoring for debate/plan decisions",
+    group: "execution",
+  },
+
   // ── Codebase Graph ─────────────────────────────────────────
   codebaseGraphEnabled: {
     envKey: "CODEBASE_GRAPH_ENABLED",
