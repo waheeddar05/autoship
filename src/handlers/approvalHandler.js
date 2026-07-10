@@ -10,7 +10,7 @@ import {
   postTaskComment,
   updateTaskStatus,
   removeTagFromTask,
-} from "../clickup-client.js";
+} from "../task-source-router.js";
 import { execute } from "../execution-engine.js";
 import { approveTask, addExecutionLog, failTask, getTaskById } from "../task-queue.js";
 import { config } from "../config-manager.js";

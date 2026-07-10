@@ -577,6 +577,42 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── GitHub Issues Task Source ──────────────────────────────
+  githubIssuesEnabled: {
+    envKey: "GITHUB_ISSUES_ENABLED",
+    default: false,
+    type: "boolean",
+    label: "GitHub Issues Source",
+    description: "Poll configured repos for issues labeled with the trigger label and run the pipeline on them",
+    group: "github",
+  },
+  githubIssuesRepos: {
+    envKey: "GITHUB_ISSUES_REPOS",
+    default: "",
+    type: "list",
+    label: "Issue Source Repos",
+    description: "Comma-separated owner/repo list to poll for labeled issues",
+    group: "github",
+  },
+  githubIssuesLabel: {
+    envKey: "GITHUB_ISSUES_LABEL",
+    default: "autoship",
+    type: "text",
+    label: "Issue Trigger Label",
+    description: "Issues with this label are picked up by AutoShip",
+    group: "github",
+  },
+  githubIssuesPollIntervalMs: {
+    envKey: "GITHUB_ISSUES_POLL_INTERVAL_MS",
+    default: 120000,
+    type: "number",
+    label: "Issue Poll Interval (ms)",
+    description: "How often to poll for labeled issues",
+    group: "github",
+    min: 30000,
+    max: 3600000,
+  },
+
   // ── Clarifying Questions ───────────────────────────────────
   clarifyingQuestionsEnabled: {
     envKey: "CLARIFYING_QUESTIONS_ENABLED",

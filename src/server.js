@@ -34,6 +34,7 @@ import { verifySlackSignature, openRequestChangesModal, updateApprovalMessage } 
 import { apiLimiter, webhookLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { startCleanupSchedule } from "./services/staleTaskCleanupService.js";
 import { processReviewFeedback, decayOldLessons } from "./services/learningPipelineService.js";
+import { startGitHubIssuesPoller } from "./sources/github-issues-source.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -863,6 +864,11 @@ async function start() {
   // Start poller if mode is 'poller' or 'both'
   if (mode === "poller" || mode === "both") {
     startPoller();
+  }
+
+  // GitHub Issues task source: label an issue → AutoShip runs the pipeline
+  if (config.get("githubIssuesEnabled")) {
+    startGitHubIssuesPoller();
   }
 
   // Schedule weekly digest if enabled

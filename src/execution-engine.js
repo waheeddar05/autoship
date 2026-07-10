@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { logger } from "./logger.js";
-import { postTaskComment, updateTaskStatus, removeTagFromTask } from "./clickup-client.js";
+import { postTaskComment, updateTaskStatus, removeTagFromTask } from "./task-source-router.js";
 import { config } from "./config-manager.js";
 import { metrics } from "./metrics.js";
 import { notifySlack, sendSlackText } from "./slack-notifier.js";

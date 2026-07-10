@@ -9,7 +9,7 @@ import {
   updateTaskAssignees,
   addTagToTask,
   getRawTaskDetails,
-} from "../clickup-client.js";
+} from "../task-source-router.js";
 import { evaluateTaskQuality } from "../services/qualityCheckService.js";
 import { generateCodingPlan } from "../services/codingPlanService.js";
 import { startApprovalPolling } from "../handlers/approvalHandler.js";
