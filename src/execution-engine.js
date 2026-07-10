@@ -412,7 +412,29 @@ const TOOL_ACTIVITY_MAP = {
   Agent: (input) => `🤖 Spawning sub-agent: ${(input?.prompt || "").substring(0, 60)}`,
 };
 
-function runClaudeCode(prompt, cwd, { modelOverride, onActivity } = {}) {
+// Live Claude Code child processes keyed by task DB id, so cancelExecution
+// can actually terminate the run instead of just forgetting the session.
+const activeProcesses = new Map(); // taskId → Set<ChildProcess>
+
+function registerProcess(taskId, proc) {
+  if (taskId == null) return;
+  let set = activeProcesses.get(taskId);
+  if (!set) {
+    set = new Set();
+    activeProcesses.set(taskId, set);
+  }
+  set.add(proc);
+}
+
+function unregisterProcess(taskId, proc) {
+  if (taskId == null) return;
+  const set = activeProcesses.get(taskId);
+  if (!set) return;
+  set.delete(proc);
+  if (set.size === 0) activeProcesses.delete(taskId);
+}
+
+function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId } = {}) {
   return new Promise((resolve, reject) => {
     const claudePath = process.env.CLAUDE_CODE_PATH || "claude";
     // executionModel is the canonical config for which model to use for implementation.
@@ -445,6 +467,7 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity } = {}) {
     logger.info({ claudePath, model, cwd, promptLength: prompt.length, timeout, streaming: useStreaming, hasApiKey: !!cleanEnv.ANTHROPIC_API_KEY }, "Spawning Claude Code");
 
     const proc = spawn(claudePath, args, { cwd, shell: false, env: cleanEnv, timeout });
+    registerProcess(taskId, proc);
 
     proc.stdin.write(prompt);
     proc.stdin.end();
@@ -541,10 +564,13 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity } = {}) {
 
     proc.on("close", (code, signal) => {
       clearInterval(heartbeat);
+      unregisterProcess(taskId, proc);
       const totalBytes = useStreaming ? streamOutputBytes : output.length;
       logger.info({ code, signal, outputLength: totalBytes }, "Claude Code process exited");
 
-      if (code !== 0) {
+      if (proc.cancelled) {
+        reject(new Error("Execution cancelled by user"));
+      } else if (code !== 0) {
         const timeoutHint = (code === 143 || signal === "SIGTERM")
           ? ` (likely timed out after ${timeout / 60_000}m)`
           : "";
@@ -585,6 +611,7 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity } = {}) {
 
     proc.on("error", (err) => {
       clearInterval(heartbeat);
+      unregisterProcess(taskId, proc);
       reject(new Error(`Failed to spawn Claude Code: ${err.message}`));
     });
   });
@@ -1030,6 +1057,7 @@ export async function execute(taskRecord) {
       const claudeResult = await runClaudeCode(prompt, repoPath, {
         modelOverride: executionModelOverride,
         onActivity: activityCallback,
+        taskId,
       });
       const claudeOutput = claudeResult.output || claudeResult;
       const claudeUsage = claudeResult.usage || null;
@@ -1209,7 +1237,7 @@ export async function execute(taskRecord) {
                 ].join("\n");
 
                 try {
-                  await runClaudeCode(fixPrompt, repoPath);
+                  await runClaudeCode(fixPrompt, repoPath, { taskId });
                   await runCommand("git", ["add", "-A"], repoPath);
                   await runCommand("git", ["commit", "-m", `fix: address build errors (attempt ${buildRetryCount})`], repoPath, { env: gitAuthorEnv });
                 } catch (fixErr) {
@@ -1275,7 +1303,7 @@ export async function execute(taskRecord) {
           ].join("\n");
 
           try {
-            await runClaudeCode(fixPrompt, repoPath);
+            await runClaudeCode(fixPrompt, repoPath, { taskId });
             await runCommand("git", ["add", "-A"], repoPath);
             await runCommand("git", ["commit", "-m", `fix: address test failures (attempt ${testRetryCount})`], repoPath, { env: gitAuthorEnv });
           } catch (fixErr) {
@@ -1733,7 +1761,7 @@ export async function executePrReview({ prReviewRecord, prNumber, prTitle, prUrl
     }
 
     // Step 3: Run Claude Code to apply fixes
-    const claudeResult = await runClaudeCode(prompt, repoPath);
+    const claudeResult = await runClaudeCode(prompt, repoPath, { taskId: linkedTaskId });
     const claudeOutput = claudeResult.output || claudeResult;
     const diffStat = await runCommand("git", ["diff", "--stat", "HEAD"], repoPath);
 
@@ -1897,20 +1925,53 @@ export async function fixFromReview({ prNumber, prTitle, branch, repoFullName, r
 
 /**
  * Cancel an active execution by taskId.
- * Finds the session for the taskId and cleans it up.
+ * Kills the spawned Claude Code process(es) for the task (SIGTERM, escalating
+ * to SIGKILL after 10s) and cleans up the session entry, so cancelled tasks
+ * stop consuming tokens immediately.
  */
 export async function cancelExecution(taskId) {
+  let found = false;
+
+  // Kill live Claude Code child processes for this task
+  const procs = activeProcesses.get(taskId);
+  if (procs && procs.size > 0) {
+    found = true;
+    for (const proc of procs) {
+      proc.cancelled = true;
+      try {
+        proc.kill("SIGTERM");
+        logger.info({ taskId, pid: proc.pid }, "Sent SIGTERM to Claude Code process");
+      } catch (err) {
+        logger.warn({ taskId, pid: proc.pid, err: err.message }, "Failed to SIGTERM Claude Code process");
+      }
+
+      // Escalate to SIGKILL if the process is still alive after 10s
+      const killTimer = setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) {
+          try {
+            proc.kill("SIGKILL");
+            logger.warn({ taskId, pid: proc.pid }, "Escalated to SIGKILL — process did not exit on SIGTERM");
+          } catch (_) {}
+        }
+      }, 10_000);
+      if (killTimer.unref) killTimer.unref();
+    }
+    activeProcesses.delete(taskId);
+  }
+
   for (const [sessionId, sessionData] of activeSessions.entries()) {
     if (sessionData.taskId === taskId) {
-      // Found the session - clean up
       activeSessions.delete(sessionId);
       logger.info({ taskId, sessionId }, "Execution cancelled");
-      return true;
+      found = true;
     }
   }
-  // No active session found for this task - this is OK (task may not be running)
-  logger.info({ taskId }, "No active session found to cancel");
-  return false;
+
+  if (!found) {
+    // No active session found for this task - this is OK (task may not be running)
+    logger.info({ taskId }, "No active session found to cancel");
+  }
+  return found;
 }
 
 export function getActiveSessions() {
