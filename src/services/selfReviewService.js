@@ -93,12 +93,22 @@ Mark passed=false if ANY critical issue exists or score < 60.`;
     const content = typeof response === "string" ? response : response.content || response.text || "";
     const usage = response.usage || {};
 
-    // Track costs
-    if (taskId && usage.prompt_tokens) {
+    // Track costs — providers report usage as { inputTokens, outputTokens }
+    const inputTokens = usage.inputTokens || 0;
+    const outputTokens = usage.outputTokens || 0;
+    const model = REVIEW_MODEL.split(":").pop();
+    if (taskId && config.get("costTrackingEnabled") && (inputTokens || outputTokens)) {
       try {
-        await addTaskCost(taskId, "self_review", REVIEW_MODEL.split(":").pop(), usage.prompt_tokens, usage.completion_tokens || 0);
-        recordTokenUsage("self_review", usage.prompt_tokens, usage.completion_tokens || 0);
-        recordCost("self_review", estimateCost(usage));
+        await addTaskCost(taskId, {
+          stepName: "self_review",
+          modelUsed: model,
+          promptTokens: inputTokens,
+          completionTokens: outputTokens,
+          totalTokens: inputTokens + outputTokens,
+          estimatedCost: estimateCost(inputTokens, outputTokens),
+        });
+        recordTokenUsage(model, "self_review", inputTokens + outputTokens);
+        recordCost(model, estimateCost(inputTokens, outputTokens));
       } catch (_) {}
     }
 
@@ -127,69 +137,21 @@ Mark passed=false if ANY critical issue exists or score < 60.`;
 }
 
 /**
- * Run iterative self-review: review → fix → re-review cycle.
- * Attempts up to maxIterations to get the code to pass review.
+ * Format self-review findings as a markdown section for the PR body.
+ * Used when the score is below the draft threshold so reviewers see what
+ * the pre-submission review flagged.
  */
-export async function iterativeSelfReview({
-  diff,
-  taskDescription,
-  codingPlan,
-  repoContext,
-  taskId,
-  maxIterations = 2,
-}) {
-  const reviews = [];
-  let currentDiff = diff;
-  let lastResult = null;
+export function formatReviewFindings(reviewResult) {
+  if (!reviewResult || !Array.isArray(reviewResult.issues) || reviewResult.issues.length === 0) return "";
 
-  for (let i = 0; i < maxIterations; i++) {
-    const result = await reviewGeneratedCode({
-      diff: currentDiff,
-      taskDescription,
-      codingPlan,
-      repoContext,
-      taskId,
-    });
+  const parts = [`## Self-Review Findings (score: ${reviewResult.score}/100)`];
+  if (reviewResult.summary) parts.push(reviewResult.summary, "");
 
-    reviews.push({ iteration: i + 1, ...result });
-    lastResult = result;
-
-    if (result.passed || result.score >= 80) {
-      logger.info({ taskId, iteration: i + 1 }, "Self-review passed");
-      break;
-    }
-
-    if (i < maxIterations - 1) {
-      logger.info({ taskId, iteration: i + 1, score: result.score }, "Self-review found issues, generating fix instructions");
-      // The fix instructions can be fed back to Claude Code for another pass
-      // The caller (execution-engine) handles the actual re-execution
-    }
+  for (const issue of reviewResult.issues) {
+    parts.push(`- **[${issue.severity}]** \`${issue.file}\`: ${issue.description}${issue.suggestion ? ` — _${issue.suggestion}_` : ""}`);
   }
 
-  return {
-    finalResult: lastResult,
-    iterations: reviews,
-    totalIterations: reviews.length,
-  };
-}
-
-/**
- * Generate fix instructions from self-review issues for Claude Code to apply.
- */
-export function generateFixInstructions(reviewResult) {
-  if (!reviewResult.issues || reviewResult.issues.length === 0) return null;
-
-  const criticalAndMajor = reviewResult.issues.filter(
-    i => i.severity === "critical" || i.severity === "major"
-  );
-
-  if (criticalAndMajor.length === 0) return null;
-
-  const instructions = criticalAndMajor.map((issue, idx) => {
-    return `${idx + 1}. [${issue.severity.toUpperCase()}] ${issue.file}: ${issue.description}\n   Fix: ${issue.suggestion}`;
-  }).join("\n\n");
-
-  return `The following issues were found during self-review. Please fix them:\n\n${instructions}`;
+  return parts.join("\n");
 }
 
 // ── Internal helpers ────────────────────────────────────────────
@@ -253,8 +215,9 @@ function parseReviewResponse(content) {
   }
 }
 
-function estimateCost(usage) {
-  const promptCost = (usage.prompt_tokens || 0) * 0.000003;
-  const completionCost = (usage.completion_tokens || 0) * 0.000015;
+// Approximate Sonnet-class pricing; only used for the estimated_cost column
+function estimateCost(inputTokens, outputTokens) {
+  const promptCost = (inputTokens || 0) * 0.000003;
+  const completionCost = (outputTokens || 0) * 0.000015;
   return promptCost + completionCost;
 }

@@ -577,6 +577,26 @@ const SCHEMA = {
     max: 16000,
   },
 
+  // ── Self-Review (non-blocking, draft PR gate only) ─────────
+  selfReviewEnabled: {
+    envKey: "SELF_REVIEW_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Pre-PR Self-Review",
+    description: "Score the final diff before PR creation — never blocks; low scores open the PR as a draft",
+    group: "execution",
+  },
+  selfReviewDraftThreshold: {
+    envKey: "SELF_REVIEW_DRAFT_THRESHOLD",
+    default: 70,
+    type: "number",
+    label: "Draft PR Threshold",
+    description: "Self-review scores below this open the PR as a draft with findings in the body",
+    group: "execution",
+    min: 0,
+    max: 100,
+  },
+
   // ── Task Decomposition ─────────────────────────────────────
   taskDecompositionEnabled: {
     envKey: "TASK_DECOMPOSITION_ENABLED",

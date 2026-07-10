@@ -39,6 +39,7 @@ import { getRepoLessons } from "./services/learningPipelineService.js";
 import { registerPromptVariant, generateVariantHash } from "./services/promptEvolutionService.js";
 import { getNextSubtask, getSubtaskProgress, completeSubtask, failSubtask, buildSubtaskPrompt, resetSubtasks } from "./services/taskDecompositionService.js";
 import { createMultiPrPlan, completePrPlanEntry, failPrPlanEntry, getNextPrToExecute } from "./services/multiPrOrchestrationService.js";
+import { reviewGeneratedCode, formatReviewFindings } from "./services/selfReviewService.js";
 
 const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
 const GITHUB_ORG = process.env.GITHUB_ORG || "your-github-org";
@@ -1602,6 +1603,45 @@ export async function execute(taskRecord) {
           prBody += `\n\n## Test Results\n${testResultsSummary}`;
         }
 
+        // Confidence-based draft PRs: a NON-BLOCKING self-review scores the
+        // final diff. It never fails the task — a low score just opens the PR
+        // as a draft with the findings in the body so reviewers see them.
+        let openAsDraft = false;
+        if (config.get("selfReviewEnabled")) {
+          try {
+            const finalDiff = await runCommand("git", ["diff", `origin/${baseBranch}...HEAD`], repoPath, { timeout: 30_000 });
+            const review = await reviewGeneratedCode({
+              diff: finalDiff,
+              taskDescription: taskRecord.description || taskRecord.name,
+              codingPlan: debatePlan,
+              taskId,
+            });
+
+            if (review.score >= 0) {
+              const threshold = config.get("selfReviewDraftThreshold") || 70;
+              openAsDraft = review.score < threshold;
+
+              const { pool: dbPool } = await import("./db.js");
+              await dbPool.query(
+                `UPDATE tasks SET self_review_score = $1, self_review_passed = $2, self_review_iterations = 1, updated_at = NOW() WHERE id = $3`,
+                [review.score, review.passed, taskId]
+              ).catch(() => {});
+
+              if (openAsDraft) {
+                const findings = formatReviewFindings(review);
+                if (findings) prBody += `\n\n${findings}`;
+                await addExecutionLog(taskId, "warn", "creating_pr",
+                  `${repoLabel}Self-review score ${review.score}/100 below threshold (${threshold}) — opening PR as draft`);
+              } else {
+                await addExecutionLog(taskId, "info", "creating_pr",
+                  `${repoLabel}Self-review score ${review.score}/100 — PR ready for review`);
+              }
+            }
+          } catch (err) {
+            logger.warn({ taskId, err: err.message }, "Self-review failed (non-fatal) — creating PR normally");
+          }
+        }
+
         const prCreateArgs = [
           "pr", "create",
           "--title", prTitle,
@@ -1610,6 +1650,7 @@ export async function execute(taskRecord) {
           "--head", branchName,
           "--repo", currentRepo.fullName,
         ];
+        if (openAsDraft) prCreateArgs.push("--draft");
 
         const reviewers = config.get("prReviewers");
         if (reviewers) {
