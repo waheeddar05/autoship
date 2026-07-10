@@ -733,6 +733,23 @@ export async function execute(taskRecord) {
       }
     }
 
+    // Multi-repo gating: when disabled, only the first repo is executed;
+    // when enabled, cap the repo count at multiRepoMaxRepos
+    if (allRepos.length > 1) {
+      if (!config.get("multiRepoEnabled")) {
+        await addExecutionLog(taskId, "warn", "resolving_repo",
+          `Task references ${allRepos.length} repos but multi-repo orchestration is disabled — executing only ${allRepos[0].fullName}`);
+        allRepos = allRepos.slice(0, 1);
+      } else {
+        const maxRepos = config.get("multiRepoMaxRepos") || 3;
+        if (allRepos.length > maxRepos) {
+          await addExecutionLog(taskId, "warn", "resolving_repo",
+            `Task references ${allRepos.length} repos — capping at multiRepoMaxRepos (${maxRepos})`);
+          allRepos = allRepos.slice(0, maxRepos);
+        }
+      }
+    }
+
     const allRepoNames = allRepos.map((r) => r.fullName).join(", ");
     if (allRepos.length > 1) {
       logger.info({ taskId, repos: allRepoNames }, "Multi-repo task — will execute against all repos");
@@ -1839,8 +1856,23 @@ export async function executePrReview({ prReviewRecord, prNumber, prTitle, prUrl
       });
     }
 
-    // Step 3: Run Claude Code to apply fixes
-    const claudeResult = await runClaudeCode(prompt, repoPath, { taskId: linkedTaskId });
+    // Step 3: Run Claude Code to apply fixes, retrying on failure up to
+    // prAutoFixMaxRetries (transient CLI/API errors shouldn't strand the PR)
+    const maxFixRetries = Math.max(0, config.get("prAutoFixMaxRetries") ?? 2);
+    let claudeResult;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        claudeResult = await runClaudeCode(prompt, repoPath, { taskId: linkedTaskId });
+        break;
+      } catch (err) {
+        if (attempt >= maxFixRetries) throw err;
+        logger.warn(
+          { prNumber, attempt: attempt + 1, maxFixRetries, err: err.message },
+          "PR auto-fix Claude run failed — retrying"
+        );
+        await new Promise((r) => setTimeout(r, 5_000 * (attempt + 1)));
+      }
+    }
     const claudeOutput = claudeResult.output || claudeResult;
     const diffStat = await runCommand("git", ["diff", "--stat", "HEAD"], repoPath);
 
@@ -2055,6 +2087,19 @@ export async function cancelExecution(taskId) {
 
 export function getActiveSessions() {
   return [...activeSessions.entries()].map(([id, data]) => ({ id, ...data }));
+}
+
+/**
+ * Squash-merge a PR via the gh CLI. Used by autoMergeOnApproval when a
+ * reviewer approves an AutoShip PR. Throws on failure (branch protection,
+ * failing checks, conflicts) — callers treat that as non-fatal.
+ */
+export async function mergePullRequest(repoFullName, prNumber) {
+  await runCommand(
+    "gh", ["pr", "merge", String(prNumber), "--repo", repoFullName, "--squash"],
+    process.cwd(), { timeout: 30_000 }
+  );
+  logger.info({ repoFullName, prNumber }, "PR auto-merged after approval");
 }
 
 // ── GitHub Webhook Auto-Registration ─────────────────────────────

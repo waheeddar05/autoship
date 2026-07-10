@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { logger } from "./logger.js";
 import { getTaskDetails } from "./clickup-client.js";
 import { handleTask, handlePrReview } from "./claude-orchestrator.js";
-import { extractExecutionMode, extractAllRepos } from "./execution-engine.js";
+import { extractExecutionMode, extractAllRepos, mergePullRequest } from "./execution-engine.js";
 import { dashboardRouter } from "./dashboard-api.js";
 import { metrics } from "./metrics.js";
 import { config } from "./config-manager.js";
@@ -575,6 +575,19 @@ app.post("/webhook/github", webhookLimiter, async (req, res) => {
       logger.info({ prUrl, prNumber: pr.number }, "[GITHUB] ✅ PR merged — recording");
       updatePRMerged(prUrl).catch((err) => {
         logger.warn({ prUrl, err: err.message }, "[GITHUB] Failed to record PR merge (non-fatal)");
+      });
+    }
+
+    // Auto-merge on approval: squash-merge AutoShip PRs once a reviewer approves
+    if (
+      event === "pull_request_review" && payload.action === "submitted" &&
+      payload.review?.state === "approved" &&
+      config.get("autoMergeOnApproval") &&
+      pr?.head?.ref?.startsWith("feature/") && !pr.draft && !pr.merged
+    ) {
+      logger.info({ prNumber: pr.number, repo: repo?.full_name, reviewer: payload.review.user?.login }, "[GITHUB] ✅ PR approved — auto-merging");
+      mergePullRequest(repo.full_name, pr.number).catch((err) => {
+        logger.warn({ prNumber: pr.number, err: err.message }, "[GITHUB] Auto-merge failed (branch protection/checks?) — leaving PR open");
       });
     }
 

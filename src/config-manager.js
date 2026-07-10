@@ -540,18 +540,10 @@ const SCHEMA = {
   // ── Multi-Repo (Feature 4) ────────────────────────────────
   multiRepoEnabled: {
     envKey: "MULTI_REPO_ENABLED",
-    default: false,
+    default: true,
     type: "boolean",
     label: "Multi-Repo Orchestration",
-    description: "Enable orchestration across multiple repositories",
-    group: "execution",
-  },
-  multiRepoParallel: {
-    envKey: "MULTI_REPO_PARALLEL",
-    default: false,
-    type: "boolean",
-    label: "Parallel Multi-Repo",
-    description: "Execute multi-repo sub-tasks in parallel",
+    description: "Execute tasks against all repos in the Repo field (off = first repo only)",
     group: "execution",
   },
   multiRepoMaxRepos: {
