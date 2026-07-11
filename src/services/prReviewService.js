@@ -88,7 +88,8 @@ function parseReviewJson(content) {
   const issues = (Array.isArray(parsed.issues) ? parsed.issues : []).slice(0, 25).map((issue) => ({
     severity: SEVERITY_ORDER.includes(issue.severity) ? issue.severity : "minor",
     file: String(issue.file || "").slice(0, 300),
-    line: Number.isFinite(Number(issue.line)) ? Number(issue.line) : null,
+    // null/""/undefined stay null — don't let Number(null)===0 fabricate line 0
+    line: issue.line == null || issue.line === "" || !Number.isFinite(Number(issue.line)) ? null : Number(issue.line),
     description: String(issue.description || "").slice(0, 1000),
     suggestion: String(issue.suggestion || "").slice(0, 1000),
   }));
@@ -139,40 +140,61 @@ export function formatReviewComment(review, { modelUsed } = {}) {
  * Never throws — returns { ok: false, error } on failure so webhook/Slack
  * callers can degrade gracefully.
  */
-export async function reviewPullRequest({ repoFullName, prNumber, prTitle, prAuthor, headSha, triggerSource = "webhook" }) {
+export async function reviewPullRequest({ repoFullName, prNumber, prTitle, prBody, prAuthor, headSha, baseBranch, headBranch, triggerSource = "webhook" }) {
   const startedAt = Date.now();
   let reviewRowId = null;
 
+  // Fill in metadata when the caller (e.g. Slack) only has repo + number.
+  // Fetching diff/metadata is prerequisite work — if it fails we can't review.
+  let meta;
   try {
-    // Fill in metadata when the caller (e.g. Slack) only has repo + number
-    let meta = { prTitle, prAuthor, headSha };
-    if (!prTitle || !headSha) {
+    meta = { prTitle, prBody, prAuthor, headSha, baseBranch, headBranch };
+    if (!prTitle || !headSha || prBody === undefined) {
       meta = { ...meta, ...(await fetchPrMetadata(repoFullName, prNumber)) };
     }
+  } catch (err) {
+    logger.error({ repoFullName, prNumber, err: err.message }, "[PR-AGENT-REVIEW] Metadata fetch failed");
+    recordPrAgentReview(false, "error");
+    return { ok: false, error: err.message };
+  }
 
-    // Dedupe webhook-triggered reviews per head commit (Slack re-reviews on demand)
-    if (triggerSource === "webhook" && meta.headSha) {
-      const { rows } = await pool.query(
-        `SELECT id FROM pr_agent_reviews
-         WHERE repo_full_name = $1 AND pr_number = $2 AND head_sha = $3 AND state = 'completed'`,
-        [repoFullName, prNumber, meta.headSha]
+  // Claim the review atomically for webhook triggers so redeliveries and
+  // overlapping opened/synchronize events don't produce duplicate comments.
+  // A partial unique index on (repo, pr, head_sha) WHERE running/completed
+  // makes INSERT ... ON CONFLICT DO NOTHING the race-proof claim. DB blips
+  // are non-fatal — we still review, just without a tracking row.
+  try {
+    if (triggerSource === "webhook") {
+      const claim = await pool.query(
+        `INSERT INTO pr_agent_reviews (repo_full_name, pr_number, pr_title, pr_author, head_sha, trigger_source, state)
+         VALUES ($1, $2, $3, $4, $5, 'webhook', 'running')
+         ON CONFLICT (repo_full_name, pr_number, head_sha) WHERE trigger_source = 'webhook' AND state IN ('running','completed')
+         DO NOTHING RETURNING id`,
+        [repoFullName, prNumber, meta.prTitle || null, meta.prAuthor || null, meta.headSha || null]
       );
-      if (rows.length > 0) {
-        logger.info({ repoFullName, prNumber, headSha: meta.headSha }, "[PR-AGENT-REVIEW] Already reviewed this commit — skipping");
+      if (claim.rows.length === 0) {
+        logger.info({ repoFullName, prNumber, headSha: meta.headSha }, "[PR-AGENT-REVIEW] Already reviewed/in-flight for this commit — skipping");
         return { ok: false, skipped: true, reason: "already_reviewed" };
       }
+      reviewRowId = claim.rows[0].id;
+    } else {
+      const inserted = await pool.query(
+        `INSERT INTO pr_agent_reviews (repo_full_name, pr_number, pr_title, pr_author, head_sha, trigger_source, state)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running') RETURNING id`,
+        [repoFullName, prNumber, meta.prTitle || null, meta.prAuthor || null, meta.headSha || null, triggerSource]
+      );
+      reviewRowId = inserted.rows[0].id;
     }
+  } catch (err) {
+    logger.warn({ repoFullName, prNumber, err: err.message }, "[PR-AGENT-REVIEW] Review claim/insert failed (proceeding without a tracking row)");
+  }
 
-    const inserted = await pool.query(
-      `INSERT INTO pr_agent_reviews (repo_full_name, pr_number, pr_title, pr_author, head_sha, trigger_source, state)
-       VALUES ($1, $2, $3, $4, $5, $6, 'running') RETURNING id`,
-      [repoFullName, prNumber, meta.prTitle || null, meta.prAuthor || null, meta.headSha || null, triggerSource]
-    );
-    reviewRowId = inserted.rows[0].id;
-
+  try {
     const diff = await fetchPrDiff(repoFullName, prNumber);
     if (!diff.trim()) {
-      await pool.query(`UPDATE pr_agent_reviews SET state = 'skipped', error = 'empty diff', completed_at = NOW() WHERE id = $1`, [reviewRowId]);
+      if (reviewRowId) {
+        await pool.query(`UPDATE pr_agent_reviews SET state = 'skipped', error = 'empty diff', completed_at = NOW() WHERE id = $1`, [reviewRowId]).catch(() => {});
+      }
       return { ok: false, skipped: true, reason: "empty_diff" };
     }
 
@@ -214,14 +236,21 @@ Return ONLY a JSON object:
       }
     }
 
+    // Review content is produced and the comment (if any) is posted — from
+    // here everything is best-effort bookkeeping that must not flip a real,
+    // published review to "failed" or make the caller think it failed.
     const durationMs = Date.now() - startedAt;
-    await pool.query(
-      `UPDATE pr_agent_reviews
-       SET state = 'completed', verdict = $2, score = $3, issues = $4, summary = $5,
-           comment_url = $6, model_used = $7, duration_ms = $8, completed_at = NOW()
-       WHERE id = $1`,
-      [reviewRowId, review.verdict, review.score, JSON.stringify(review.issues), review.summary, commentUrl, PR_REVIEW_MODEL, durationMs]
-    );
+    if (reviewRowId) {
+      await pool.query(
+        `UPDATE pr_agent_reviews
+         SET state = 'completed', verdict = $2, score = $3, issues = $4, summary = $5,
+             comment_url = $6, model_used = $7, duration_ms = $8, completed_at = NOW()
+         WHERE id = $1`,
+        [reviewRowId, review.verdict, review.score, JSON.stringify(review.issues), review.summary, commentUrl, PR_REVIEW_MODEL, durationMs]
+      ).catch((err) => {
+        logger.warn({ repoFullName, prNumber, err: err.message }, "[PR-AGENT-REVIEW] Completion update failed (review already posted)");
+      });
+    }
 
     recordPrAgentReview(true, review.verdict);
     if (response?.usage) {
@@ -235,7 +264,7 @@ Return ONLY a JSON object:
       `[PR-AGENT-REVIEW] ✅ Reviewed ${repoFullName}#${prNumber} — ${review.verdict} (${review.score}/100)`
     );
 
-    return { ok: true, ...review, commentUrl, prTitle: meta.prTitle, prUrl: meta.htmlUrl };
+    return { ok: true, ...review, commentUrl, prTitle: meta.prTitle, prUrl: meta.htmlUrl, modelUsed: PR_REVIEW_MODEL, usage: response?.usage || null };
   } catch (err) {
     logger.error({ repoFullName, prNumber, err: err.message }, "[PR-AGENT-REVIEW] Review failed");
     recordPrAgentReview(false, "error");
@@ -255,6 +284,13 @@ Return ONLY a JSON object:
 export async function handlePrOpened(payload) {
   try {
     if (!config.get("reviewEveryPrEnabled")) return;
+
+    // Fail closed: without a signing secret, webhook payloads are unauthenticated
+    // and could be forged to drive private-diff exfiltration / arbitrary PR comments.
+    if (!process.env.GITHUB_WEBHOOK_SECRET) {
+      logger.warn("[PR-AGENT-REVIEW] ⏭️ SKIP: GITHUB_WEBHOOK_SECRET unset — refusing to act on unverified webhook");
+      return;
+    }
 
     const pr = payload.pull_request;
     const repo = payload.repository;
@@ -281,8 +317,11 @@ export async function handlePrOpened(payload) {
       repoFullName: repo.full_name,
       prNumber: pr.number,
       prTitle: pr.title,
+      prBody: pr.body || "",
       prAuthor: pr.user?.login,
       headSha: pr.head?.sha,
+      baseBranch: pr.base?.ref,
+      headBranch: pr.head?.ref,
       triggerSource: "webhook",
     });
   } catch (err) {

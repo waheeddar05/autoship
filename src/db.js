@@ -755,6 +755,11 @@ async function initialize() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_pr_agent_reviews_pr ON pr_agent_reviews(repo_full_name, pr_number)`,
     `CREATE INDEX IF NOT EXISTS idx_pr_agent_reviews_created ON pr_agent_reviews(created_at)`,
+    // Race-proof dedupe: at most one in-flight/completed webhook review per
+    // (repo, PR, head commit). Failed rows drop out so a retry is allowed.
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_pr_agent_reviews_active
+      ON pr_agent_reviews (repo_full_name, pr_number, head_sha)
+      WHERE trigger_source = 'webhook' AND state IN ('running','completed')`,
   ];
 
   for (const migration of migrations) {

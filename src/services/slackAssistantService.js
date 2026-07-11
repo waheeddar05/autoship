@@ -16,13 +16,16 @@ import { providerRegistry } from "../providers/provider-registry.js";
 import { handleAppMention } from "./slackTaskIntakeService.js";
 import { createClickUpTask } from "../task-creator-api.js";
 import { reviewPullRequest } from "./prReviewService.js";
-import { ensureRepoCloned } from "../execution-engine.js";
 import { indexRepository, getRelevantContext, getIndexSummary } from "../codebase-index.js";
 import { detectProjectType, generateContextPrompt } from "../project-context.js";
 import { buildCodebaseGraph, findAffectedModules } from "./codebaseGraphService.js";
 import { recordAssistantRequest, recordTokenUsage, recordCost } from "../prometheus.js";
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const ASSISTANT_MODEL = process.env.ASSISTANT_MODEL || "anthropic:claude-sonnet-4-6";
@@ -33,6 +36,13 @@ const MAX_HISTORY_MESSAGES = 20;
 const MAX_FILE_CHARS = 4_000;
 const MAX_CONTEXT_FILES = 3;
 const MAX_ANSWER_CHARS = 12_000;
+const MAX_INPUT_CHARS = 6_000; // cap on raw user text sent to the LLM
+
+// Dedicated read-only clone dir — kept separate from the execution engine's
+// REPOS_BASE_DIR so answering questions never races task executions that
+// check out feature branches and edit files in place.
+const REPOS_BASE_DIR = process.env.REPOS_BASE_DIR || "/app/repos";
+const ASSISTANT_REPOS_DIR = process.env.ASSISTANT_REPOS_DIR || `${REPOS_BASE_DIR}-assistant`;
 
 const INTENTS = ["ask", "debug", "spec_review", "pr_review", "task", "help"];
 
@@ -54,23 +64,139 @@ async function slackApi(method, body) {
 
 // ── Parsing helpers ─────────────────────────────────────────────
 
-/** Extract a PR reference: a github.com/.../pull/N URL or owner/repo#N shorthand. */
+const FILE_EXT_RE = /\.(js|ts|tsx|jsx|mjs|cjs|java|kt|py|go|rb|rs|c|cc|cpp|h|hpp|cs|php|swift|scala|css|scss|less|html|json|ya?ml|toml|xml|sh|sql|md|txt|lock|properties)$/i;
+
+/**
+ * Validate an "owner/repo" reference. Rejects anything that could escape
+ * REPOS_BASE_DIR (path traversal) or isn't a well-formed repo name.
+ */
+export function isValidRepoFullName(s) {
+  if (!s || typeof s !== "string") return false;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s)) return false;
+  for (const seg of s.split("/")) {
+    if (seg === "." || seg === ".." || seg.includes("..")) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract a PR reference: a github.com/.../pull/N URL or owner/repo#N
+ * shorthand. Returns null unless the repo reference is well-formed.
+ */
 export function extractPrReference(text) {
   const url = text.match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/);
-  if (url) return { repoFullName: url[1], prNumber: parseInt(url[2], 10) };
+  if (url && isValidRepoFullName(url[1])) return { repoFullName: url[1], prNumber: parseInt(url[2], 10) };
   const shorthand = text.match(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/);
-  if (shorthand) return { repoFullName: shorthand[1], prNumber: parseInt(shorthand[2], 10) };
+  if (shorthand && isValidRepoFullName(shorthand[1])) return { repoFullName: shorthand[1], prNumber: parseInt(shorthand[2], 10) };
   return null;
 }
 
-/** Extract an owner/repo reference (ignoring PR URLs' trailing paths). */
-function extractRepo(text) {
-  const url = text.match(/github\.com\/([\w.-]+\/[\w.-]+)/);
-  if (url) return url[1];
-  const full = text.match(/\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/);
-  if (full && !full[1].includes("..")) return full[1];
-  const tagged = text.match(/\brepo[:=]\s*([A-Za-z0-9_.-]+\/?[A-Za-z0-9_.-]*)\b/i);
-  return tagged ? tagged[1] : null;
+/**
+ * Extract an EXPLICIT repo reference — a github.com URL or a `repo:` tag.
+ * These are unambiguous user intent, so they're trusted (after validation).
+ */
+function extractExplicitRepo(text) {
+  const url = text.match(/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/);
+  if (url) {
+    const name = url[1].replace(/\.git$/, "");
+    if (isValidRepoFullName(name)) return name;
+  }
+  const tagged = text.match(/\brepo[:=]\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/i);
+  if (tagged && isValidRepoFullName(tagged[1])) return tagged[1];
+  return null;
+}
+
+/**
+ * Extract a BARE `owner/repo` token, rejecting file paths and trace frames
+ * (e.g. "src/auth.js", "CI/CD", "24/7", "a/b/c"). Callers should confirm the
+ * result is a known repo before trusting it — this is a candidate, not proof.
+ */
+function extractBareRepo(text) {
+  const re = /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const candidate = m[1];
+    if (!isValidRepoFullName(candidate)) continue;
+    const after = text.slice(re.lastIndex, re.lastIndex + 3);
+    if (after.startsWith("/")) continue; // deeper path: a/b/c
+    if (/^:\d/.test(after)) continue; // trace frame: file.js:12
+    const repoSeg = candidate.split("/")[1];
+    if (FILE_EXT_RE.test(repoSeg)) continue; // looks like a file
+    return candidate;
+  }
+  return null;
+}
+
+/** Is this a repo AutoShip has seen before (a real, registered repo)? */
+async function isKnownRepo(fullName) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM tasks WHERE lower(repo_full_name) = lower($1) LIMIT 1`,
+      [fullName]
+    );
+    return rows.length > 0;
+  } catch (err) {
+    logger.warn({ err: err.message }, "[ASSISTANT] Known-repo lookup failed (non-fatal)");
+    return false;
+  }
+}
+
+// ── Read-only repo clone (separate from the execution engine's clones) ──
+
+async function git(args, cwd, timeout = 60_000) {
+  return execFileP("git", args, {
+    cwd,
+    timeout,
+    maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+}
+
+/**
+ * Ensure a fresh, read-only checkout of a repo's DEFAULT branch under
+ * ASSISTANT_REPOS_DIR. Unlike ensureRepoCloned (which only fetches and is
+ * shared with the mutating execution pipeline), this hard-resets to the
+ * remote default branch so answers reflect current mainline code.
+ */
+async function ensureAssistantClone(repoFullName) {
+  if (!isValidRepoFullName(repoFullName)) throw new Error(`Invalid repo reference: ${repoFullName}`);
+  const repoName = repoFullName.split("/")[1];
+  const repoPath = path.join(ASSISTANT_REPOS_DIR, repoName);
+  const token = process.env.GITHUB_TOKEN;
+  const cloneUrl = token
+    ? `https://x-access-token:${token}@github.com/${repoFullName}.git`
+    : `git@github.com:${repoFullName}.git`;
+
+  if (!fs.existsSync(repoPath)) {
+    fs.mkdirSync(ASSISTANT_REPOS_DIR, { recursive: true });
+    await git(["clone", "--depth", "50", cloneUrl, repoName], ASSISTANT_REPOS_DIR, 120_000);
+  } else if (token) {
+    await git(["remote", "set-url", "origin", cloneUrl], repoPath).catch(() => {});
+  }
+
+  // Resolve the remote default branch (origin/HEAD), falling back to config.
+  let defaultBranch = config.get("baseBranch") || "main";
+  try {
+    const { stdout } = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repoPath);
+    const branch = stdout.trim().replace(/^origin\//, "");
+    if (branch) defaultBranch = branch;
+  } catch {
+    await git(["remote", "set-head", "origin", "-a"], repoPath).catch(() => {});
+    try {
+      const { stdout } = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repoPath);
+      const branch = stdout.trim().replace(/^origin\//, "");
+      if (branch) defaultBranch = branch;
+    } catch { /* keep config/main fallback */ }
+  }
+
+  await git(["fetch", "--depth", "50", "origin", defaultBranch], repoPath, 120_000).catch((err) => {
+    logger.warn({ repoFullName, err: err.message }, "[ASSISTANT] Fetch failed (using cached checkout)");
+  });
+  await git(["checkout", "-B", defaultBranch, `origin/${defaultBranch}`], repoPath).catch(async () => {
+    await git(["checkout", "-f", defaultBranch], repoPath).catch(() => {});
+  });
+  await git(["reset", "--hard", `origin/${defaultBranch}`], repoPath).catch(() => {});
+  return repoPath;
 }
 
 /** Does the text look like it contains a stack trace or crash log? */
@@ -93,7 +219,8 @@ export function looksLikeStackTrace(text) {
 export async function classifyIntent(text) {
   const trimmed = text.trim();
 
-  if (/^(help|what can you do)\b/i.test(trimmed) && trimmed.length < 40) return "help";
+  // Bare help request only — "help me fix X" is a real task, not the help card
+  if (/^(help|what can you do|commands|usage)\s*[!?.]*$/i.test(trimmed)) return "help";
 
   const prRef = extractPrReference(trimmed);
   if (prRef && /\breview\b/i.test(trimmed)) return "pr_review";
@@ -217,7 +344,7 @@ async function buildAssistantRepoContext(repoFullName, question) {
   let index = null;
 
   try {
-    repoPath = await ensureRepoCloned(repoFullName);
+    repoPath = await ensureAssistantClone(repoFullName);
   } catch (err) {
     logger.warn({ repoFullName, err: err.message }, "[ASSISTANT] Repo clone failed — answering without repo context");
     return { blocks, repoPath: null, index: null, projectInfo: null };
@@ -262,8 +389,19 @@ async function buildAssistantRepoContext(repoFullName, question) {
   return { blocks, repoPath, index, projectInfo };
 }
 
-function resolveRepo(text, thread) {
-  return extractRepo(text) || thread?.repo_full_name || config.get("assistantDefaultRepo") || null;
+/**
+ * Resolve which repo a mention is about. Explicit signals (github.com URL,
+ * `repo:` tag) are trusted; a bare owner/repo token is only used if it's a
+ * repo AutoShip already knows — otherwise we fall back to the thread's repo
+ * or the configured default. This prevents file paths / stack-trace frames
+ * (e.g. "src/auth.js") from hijacking repo resolution.
+ */
+async function resolveRepo(text, thread) {
+  const explicit = extractExplicitRepo(text);
+  if (explicit) return explicit;
+  const bare = extractBareRepo(text);
+  if (bare && (await isKnownRepo(bare))) return bare;
+  return thread?.repo_full_name || config.get("assistantDefaultRepo") || null;
 }
 
 function buildMessages(history, currentContent) {
@@ -284,17 +422,18 @@ const SLACK_STYLE = `Format the answer for Slack mrkdwn: *bold* for emphasis, _i
 // ── Intent handlers ─────────────────────────────────────────────
 
 async function answerQuestion({ text, thread }) {
-  const repoFullName = resolveRepo(text, thread);
+  const repoFullName = await resolveRepo(text, thread);
+  const question = text.slice(0, MAX_INPUT_CHARS);
   const contextParts = [];
 
   if (repoFullName) {
-    const { blocks } = await buildAssistantRepoContext(repoFullName, text);
+    const { blocks } = await buildAssistantRepoContext(repoFullName, question);
     contextParts.push(...blocks);
   }
 
   const userContent = [
     ...contextParts,
-    `## Question\n${text}`,
+    `## Question\n${question}`,
   ].join("\n\n---\n\n");
 
   const systemPrompt = `You are AutoShip's engineering assistant answering a teammate's question in Slack${repoFullName ? ` about the repository ${repoFullName}` : ""}. Answer from the provided codebase context when available; when the context doesn't cover the question, say what you'd need to look at. ${SLACK_STYLE}`;
@@ -307,29 +446,32 @@ async function answerQuestion({ text, thread }) {
   });
 
   const answer = (typeof response === "string" ? response : response.content || response.text || "").trim();
-  return { answer, usage: response?.usage, repoFullName };
+  return { answer, usage: response?.usage, repoFullName, modelUsed: ASSISTANT_MODEL };
 }
 
 async function debugIncident({ text, thread }) {
-  const repoFullName = resolveRepo(text, thread);
+  const repoFullName = await resolveRepo(text, thread);
+  const incident = text.slice(0, MAX_INPUT_CHARS);
   const contextParts = [];
   let blastRadius = [];
 
   if (repoFullName) {
-    const { blocks, repoPath, projectInfo } = await buildAssistantRepoContext(repoFullName, text);
+    const { blocks, repoPath, projectInfo } = await buildAssistantRepoContext(repoFullName, incident);
     contextParts.push(...blocks);
 
     // Blast radius: map stack-trace files to the dependency graph
     try {
       if (repoPath) {
         const graph = await buildCodebaseGraph(repoPath, projectInfo?.type || "unknown");
-        const traceFiles = [...text.matchAll(/([\w./-]+\.(?:js|ts|tsx|jsx|java|kt|py|go|rb))/g)]
+        const traceFiles = [...incident.matchAll(/([\w./-]+\.(?:js|ts|tsx|jsx|java|kt|py|go|rb))/g)]
           .map((m) => m[1])
           .filter((f, i, arr) => arr.indexOf(f) === i)
           .slice(0, 5);
         for (const traceFile of traceFiles) {
           const base = path.basename(traceFile);
-          const module = graph.modules.find((mod) => mod.file.endsWith(base));
+          // Exact-basename match with a path boundary — avoids "auth.js"
+          // wrongly matching "oauth.js"
+          const module = graph.modules.find((mod) => path.basename(mod.file) === base);
           if (module) {
             const affected = findAffectedModules(graph, module.file).slice(0, 10);
             if (affected.length > 0) blastRadius.push({ file: module.file, affected });
@@ -347,7 +489,7 @@ async function debugIncident({ text, thread }) {
 
   const userContent = [
     ...contextParts,
-    `## Incident / error report\n${text}`,
+    `## Incident / error report\n${incident}`,
   ].join("\n\n---\n\n");
 
   const systemPrompt = `You are AutoShip's incident-debugging assistant${repoFullName ? ` for the repository ${repoFullName}` : ""}. A teammate pasted an error, stack trace, or incident description. Diagnose it against the provided codebase context.
@@ -388,7 +530,7 @@ After your reply, append a fenced JSON block with a fix task draft:
     if (suggestedTask) answer = answer.slice(0, jsonMatch.index).trim();
   }
 
-  return { answer, usage: response?.usage, repoFullName, suggestedTask };
+  return { answer, usage: response?.usage, repoFullName, suggestedTask, modelUsed: ASSISTANT_MODEL };
 }
 
 async function reviewSpec({ text, thread }) {
@@ -402,7 +544,7 @@ Structure your Slack reply with these bold section labels:
 *Verdict* — ready to build / needs another pass, and why
 ${SLACK_STYLE}`;
 
-  const response = await providerRegistry.chat(ASSISTANT_MODEL, buildMessages(thread?.messages, `## Spec to review\n${text}`), {
+  const response = await providerRegistry.chat(ASSISTANT_MODEL, buildMessages(thread?.messages, `## Spec to review\n${text.slice(0, MAX_INPUT_CHARS)}`), {
     systemPrompt,
     temperature: 0.3,
     maxTokens: 1800,
@@ -410,7 +552,7 @@ ${SLACK_STYLE}`;
   });
 
   const answer = (typeof response === "string" ? response : response.content || response.text || "").trim();
-  return { answer, usage: response?.usage, repoFullName: null };
+  return { answer, usage: response?.usage, repoFullName: null, modelUsed: ASSISTANT_MODEL };
 }
 
 async function runPrReviewFromSlack({ text }) {
@@ -429,6 +571,8 @@ async function runPrReviewFromSlack({ text }) {
     return {
       answer: `❌ Couldn't review \`${prRef.repoFullName}#${prRef.prNumber}\`: ${result.error || result.reason || "unknown error"}`,
       repoFullName: prRef.repoFullName,
+      modelUsed: result.modelUsed,
+      usage: result.usage,
     };
   }
 
@@ -446,7 +590,7 @@ async function runPrReviewFromSlack({ text }) {
     result.commentUrl ? `\n<${result.commentUrl}|Full review posted on the PR>` : "",
   ].filter(Boolean).join("\n");
 
-  return { answer, repoFullName: prRef.repoFullName, usage: null };
+  return { answer, repoFullName: prRef.repoFullName, usage: result.usage, modelUsed: result.modelUsed };
 }
 
 const HELP_TEXT = [
@@ -473,6 +617,7 @@ export async function handleAssistantMention(event) {
   const requestedBy = event.user;
   const text = (event.text || "").replace(/<@[A-Z0-9]+>/g, "").trim();
   const startedAt = Date.now();
+  let placeholderTs = null;
 
   try {
     if (!text) {
@@ -491,9 +636,10 @@ export async function handleAssistantMention(event) {
     }
 
     if (intent === "task") {
-      // Existing intake flow: draft → Create / Create & Run buttons → PR
-      recordAssistantRequest("task", true);
+      // Existing intake flow: draft → Create / Create & Run buttons → PR.
+      // Count success only after intake actually completes.
       await handleAppMention(event);
+      recordAssistantRequest("task", true);
       return;
     }
 
@@ -504,7 +650,6 @@ export async function handleAssistantMention(event) {
       spec_review: "📋 _Reviewing the spec…_",
       pr_review: "🧐 _Reviewing the PR — this can take a minute…_",
     };
-    let placeholderTs = null;
     try {
       const posted = await slackApi("chat.postMessage", { channel, thread_ts: threadTs, text: placeholderLabels[intent] || "🤔 _Working on it…_" });
       placeholderTs = posted.ts;
@@ -514,6 +659,7 @@ export async function handleAssistantMention(event) {
 
     const handlers = { ask: answerQuestion, debug: debugIncident, spec_review: reviewSpec, pr_review: runPrReviewFromSlack };
     const result = await handlers[intent]({ text, thread });
+    const modelUsed = result.modelUsed || ASSISTANT_MODEL;
 
     let answer = (result.answer || "").slice(0, MAX_ANSWER_CHARS) || "_I couldn't produce an answer — try rephrasing?_";
     const durationMs = Date.now() - startedAt;
@@ -522,7 +668,7 @@ export async function handleAssistantMention(event) {
       intent, channel, threadTs, requestedBy,
       repoFullName: result.repoFullName,
       requestText: text, responseText: answer,
-      modelUsed: ASSISTANT_MODEL, usage: result.usage, durationMs,
+      modelUsed, usage: result.usage, durationMs,
       suggestedTask: result.suggestedTask,
     });
 
@@ -553,18 +699,21 @@ export async function handleAssistantMention(event) {
     recordAssistantRequest(intent, true);
     if (result.usage) {
       const totalTokens = (result.usage.inputTokens || 0) + (result.usage.outputTokens || 0);
-      recordTokenUsage(ASSISTANT_MODEL, `assistant_${intent}`, totalTokens);
-      recordCost(ASSISTANT_MODEL, totalTokens * 0.000009);
+      recordTokenUsage(modelUsed, `assistant_${intent}`, totalTokens);
+      recordCost(modelUsed, totalTokens * 0.000009);
     }
     logger.info({ channel, intent, durationMs, repo: result.repoFullName }, "[ASSISTANT] ✅ Answered");
   } catch (err) {
     logger.error({ channel, err: err.message }, "[ASSISTANT] Mention handling failed");
     recordAssistantRequest("error", false);
     await recordInteraction({ intent: "error", channel, threadTs, requestedBy, requestText: text, error: err.message, durationMs: Date.now() - startedAt });
-    await slackApi("chat.postMessage", {
-      channel, thread_ts: threadTs,
-      text: `❌ Something went wrong: ${err.message}`,
-    }).catch(() => {});
+    const errorText = `❌ Something went wrong: ${err.message}`;
+    // Replace the "…working…" placeholder rather than orphaning it
+    if (placeholderTs) {
+      await slackApi("chat.update", { channel, ts: placeholderTs, text: errorText, blocks: [{ type: "section", text: { type: "mrkdwn", text: errorText } }] }).catch(() => {});
+    } else {
+      await slackApi("chat.postMessage", { channel, thread_ts: threadTs, text: errorText }).catch(() => {});
+    }
   }
 }
 
@@ -577,27 +726,34 @@ export async function handleAssistantAction(actionId, value, userName, { channel
   if (actionId !== "assistant_create_task") return;
 
   const interactionId = parseInt(value, 10);
-  const { rows } = await pool.query(
-    `SELECT * FROM assistant_interactions WHERE id = $1 AND suggested_task IS NOT NULL`,
-    [interactionId]
-  );
-  const interaction = rows[0];
-
-  const reply = (text) =>
-    slackApi("chat.postMessage", { channel, thread_ts: interaction?.thread_ts || messageTs, text }).catch(() => {});
-
-  if (!interaction) {
-    await reply("⚠️ I couldn't find that analysis anymore.");
-    return;
-  }
-  if (interaction.created_task_id) {
-    await reply(`⚠️ A fix task was already created for this analysis.`);
-    return;
-  }
+  const reply = (text, threadTs) =>
+    slackApi("chat.postMessage", { channel, thread_ts: threadTs || messageTs, text }).catch(() => {});
 
   const listId = config.get("slackIntakeListId");
   if (!listId) {
     await reply("⚙️ Set *Slack Intake List ID* in the AutoShip dashboard settings to create tasks from Slack.");
+    return;
+  }
+
+  // Atomically claim the interaction so a double-click can't create two tasks:
+  // only one concurrent handler flips created_task_id from NULL to '__pending__'.
+  let interaction;
+  try {
+    const claim = await pool.query(
+      `UPDATE assistant_interactions SET created_task_id = '__pending__'
+       WHERE id = $1 AND suggested_task IS NOT NULL AND created_task_id IS NULL
+       RETURNING *`,
+      [interactionId]
+    );
+    interaction = claim.rows[0];
+  } catch (err) {
+    logger.error({ interactionId, err: err.message }, "[ASSISTANT] Fix-task claim failed");
+    await reply(`❌ Couldn't create the fix task right now: ${err.message}`);
+    return;
+  }
+
+  if (!interaction) {
+    await reply("⚠️ That analysis is unavailable or a fix task was already created for it.");
     return;
   }
 
@@ -616,10 +772,12 @@ export async function handleAssistantAction(actionId, value, userName, { channel
     });
 
     await pool.query(`UPDATE assistant_interactions SET created_task_id = $2 WHERE id = $1`, [interactionId, result.taskId]);
-    await reply(`✅ Fix task created by ${userName}: <${result.url}|${suggested.title}>`);
+    await reply(`✅ Fix task created by ${userName}: <${result.url}|${suggested.title}>`, interaction.thread_ts);
     logger.info({ interactionId, taskId: result.taskId }, "[ASSISTANT] Fix task created from debug analysis");
   } catch (err) {
+    // Release the claim so the user can retry
+    await pool.query(`UPDATE assistant_interactions SET created_task_id = NULL WHERE id = $1`, [interactionId]).catch(() => {});
     logger.error({ interactionId, err: err.message }, "[ASSISTANT] Fix task creation failed");
-    await reply(`❌ Task creation failed: ${err.message}`);
+    await reply(`❌ Task creation failed: ${err.message}`, interaction.thread_ts);
   }
 }

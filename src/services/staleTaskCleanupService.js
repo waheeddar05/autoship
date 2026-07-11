@@ -67,6 +67,24 @@ export async function cleanupStaleTasks() {
     }
   }
 
+  // Sweep PR agent reviews stuck in 'running' after a crash/redeploy mid-review.
+  // Leaving them 'running' would also block the dedupe unique index forever.
+  try {
+    const prCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min, well past PR_REVIEW_TIMEOUT
+    const { rowCount } = await pool.query(
+      `UPDATE pr_agent_reviews
+       SET state = 'failed', error = 'stale running review (process restart?)', completed_at = NOW()
+       WHERE state = 'running' AND created_at < $1`,
+      [prCutoff]
+    );
+    if (rowCount > 0) {
+      logger.warn({ count: rowCount }, "Stale PR agent reviews cleaned up");
+      totalCleaned += rowCount;
+    }
+  } catch (err) {
+    logger.error({ err: err.message }, "Stale PR agent review cleanup failed");
+  }
+
   if (totalCleaned > 0) {
     logger.info({ totalCleaned }, "Stale task cleanup complete");
   }
