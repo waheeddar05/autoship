@@ -36,6 +36,8 @@ import { startCleanupSchedule } from "./services/staleTaskCleanupService.js";
 import { processReviewFeedback, decayOldLessons } from "./services/learningPipelineService.js";
 import { startGitHubIssuesPoller } from "./sources/github-issues-source.js";
 import { handleAppMention, handleIntakeAction } from "./services/slackTaskIntakeService.js";
+import { handleAssistantMention, handleAssistantAction } from "./services/slackAssistantService.js";
+import { handlePrOpened } from "./services/prReviewService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -203,7 +205,23 @@ app.get("/api/auth/me", (req, res) => {
   res.status(401).json({ error: "Not authenticated" });
 });
 
-// ── Slack Events endpoint (app_mention → task intake) ────────────
+// ── Slack Events endpoint (app_mention → assistant / task intake) ──
+// Slack redelivers events it thinks weren't handled (fast ack races,
+// endpoint slowness), so dedupe on event_id to avoid double answers.
+const seenSlackEvents = new Map(); // event_id → timestamp
+const SLACK_EVENT_DEDUP_MS = 5 * 60_000;
+
+function isDuplicateSlackEvent(eventId) {
+  if (!eventId) return false;
+  const now = Date.now();
+  for (const [id, ts] of seenSlackEvents) {
+    if (now - ts > SLACK_EVENT_DEDUP_MS) seenSlackEvents.delete(id);
+  }
+  if (seenSlackEvents.has(eventId)) return true;
+  seenSlackEvents.set(eventId, now);
+  return false;
+}
+
 app.post("/api/slack/events", webhookLimiter, async (req, res) => {
   try {
     // Slack URL verification handshake
@@ -220,10 +238,22 @@ app.post("/api/slack/events", webhookLimiter, async (req, res) => {
 
     const event = req.body?.event;
     if (req.body?.type === "event_callback" && event?.type === "app_mention" && !event.bot_id) {
-      logger.info({ channel: event.channel, user: event.user }, "[SLACK] App mention — routing to task intake");
-      handleAppMention(event).catch((err) => {
-        logger.error({ err: err.message }, "[SLACK] Task intake failed");
-      });
+      if (isDuplicateSlackEvent(req.body.event_id)) {
+        logger.info({ eventId: req.body.event_id }, "[SLACK] Duplicate event delivery — skipping");
+        return;
+      }
+
+      if (config.get("slackAssistantEnabled")) {
+        logger.info({ channel: event.channel, user: event.user }, "[SLACK] App mention — routing to assistant");
+        handleAssistantMention(event).catch((err) => {
+          logger.error({ err: err.message }, "[SLACK] Assistant handling failed");
+        });
+      } else {
+        logger.info({ channel: event.channel, user: event.user }, "[SLACK] App mention — routing to task intake");
+        handleAppMention(event).catch((err) => {
+          logger.error({ err: err.message }, "[SLACK] Task intake failed");
+        });
+      }
     }
   } catch (err) {
     logger.error({ err: err.message }, "[SLACK] Event handling error");
@@ -268,6 +298,15 @@ app.post("/api/slack/interactions", webhookLimiter, async (req, res) => {
         res.status(200).send();
         handleIntakeAction(action.action_id, action.value, userName, { channel: channelId, messageTs }).catch((err) => {
           logger.error({ action: action.action_id, err: err.message }, "[SLACK] Intake action failed");
+        });
+        return;
+      }
+
+      // Assistant buttons (e.g. "Create fix task" on a debug analysis)
+      if (action.action_id?.startsWith("assistant_")) {
+        res.status(200).send();
+        handleAssistantAction(action.action_id, action.value, userName, { channel: channelId, messageTs }).catch((err) => {
+          logger.error({ action: action.action_id, err: err.message }, "[SLACK] Assistant action failed");
         });
         return;
       }
@@ -607,6 +646,14 @@ app.post("/webhook/github", webhookLimiter, async (req, res) => {
       },
       `[GITHUB] 📨 ${event}/${payload.action} — PR #${pr?.number || "?"} "${pr?.title || "?"}" on ${repo?.full_name || "?"}`
     );
+
+    // Review-every-PR: in-depth AI review of newly opened PRs (any author).
+    // Gating (enabled flag, drafts, bots, per-commit dedupe) lives in the service.
+    if (event === "pull_request" && ["opened", "ready_for_review", "synchronize"].includes(payload.action)) {
+      handlePrOpened(payload).catch((err) => {
+        logger.warn({ prNumber: pr?.number, err: err.message }, "[GITHUB] PR agent review failed (non-fatal)");
+      });
+    }
 
     // Feature 10: Learning — record PR merged events
     if (event === "pull_request" && payload.action === "closed" && payload.pull_request?.merged) {

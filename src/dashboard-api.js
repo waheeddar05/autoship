@@ -600,6 +600,39 @@ router.get("/api/pr-reviews", async (_req, res) => {
   }
 });
 
+// ── Assistant (Slack) activity ───────────────────────────────────
+router.get("/api/assistant/interactions", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+    const { pool } = await import("./db.js");
+    const { rows } = await pool.query(
+      `SELECT id, intent, channel, requested_by, repo_full_name, request_text,
+              model_used, input_tokens, output_tokens, duration_ms, error,
+              created_task_id, created_at
+       FROM assistant_interactions ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PR agent reviews (review-every-PR) ───────────────────────────
+router.get("/api/pr-agent-reviews", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+    const { pool } = await import("./db.js");
+    const { rows } = await pool.query(
+      `SELECT * FROM pr_agent_reviews ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Cost Tracking ────────────────────────────────────────────────
 router.get("/api/tasks/:id/costs", async (req, res) => {
   try {

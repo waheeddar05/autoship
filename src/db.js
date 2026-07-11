@@ -694,6 +694,67 @@ async function initialize() {
         ALTER TABLE tasks ADD COLUMN subtask_count INTEGER DEFAULT 0;
       END IF;
     END $$;`,
+
+    // Slack assistant: per-thread conversation memory (follow-up mentions
+    // in the same thread continue the conversation with context)
+    `CREATE TABLE IF NOT EXISTS assistant_threads (
+      id SERIAL PRIMARY KEY,
+      channel TEXT NOT NULL,
+      thread_ts TEXT NOT NULL,
+      repo_full_name TEXT,
+      last_intent TEXT,
+      messages JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (channel, thread_ts)
+    )`,
+
+    // Slack assistant: audit log of every answered mention (Q&A, debug,
+    // spec review, PR review), including the debug fix-task drafts
+    `CREATE TABLE IF NOT EXISTS assistant_interactions (
+      id SERIAL PRIMARY KEY,
+      intent TEXT NOT NULL,
+      channel TEXT,
+      thread_ts TEXT,
+      requested_by TEXT,
+      repo_full_name TEXT,
+      request_text TEXT,
+      response_text TEXT,
+      model_used TEXT,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      duration_ms BIGINT,
+      error TEXT,
+      suggested_task JSONB,
+      created_task_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_assistant_interactions_created ON assistant_interactions(created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_assistant_interactions_intent ON assistant_interactions(intent)`,
+
+    // Review-every-PR: AI reviews posted on opened PRs (webhook or Slack)
+    `CREATE TABLE IF NOT EXISTS pr_agent_reviews (
+      id SERIAL PRIMARY KEY,
+      repo_full_name TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      pr_title TEXT,
+      pr_author TEXT,
+      head_sha TEXT,
+      trigger_source TEXT NOT NULL DEFAULT 'webhook',
+      verdict TEXT,
+      score INTEGER,
+      issues JSONB NOT NULL DEFAULT '[]',
+      summary TEXT,
+      comment_url TEXT,
+      model_used TEXT,
+      duration_ms BIGINT,
+      error TEXT,
+      state TEXT NOT NULL DEFAULT 'running',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_pr_agent_reviews_pr ON pr_agent_reviews(repo_full_name, pr_number)`,
+    `CREATE INDEX IF NOT EXISTS idx_pr_agent_reviews_created ON pr_agent_reviews(created_at)`,
   ];
 
   for (const migration of migrations) {

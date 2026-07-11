@@ -18,6 +18,37 @@ ClickUp (new task created in configured folder)
     → ClickUp: posts PR link as comment on the task
 ```
 
+## Slack AI Assistant
+
+Beyond building tasks, AutoShip is a full AI engineering assistant in Slack
+(à la Razorpay's "Slash"). Mention the bot with anything:
+
+| You say | It does |
+|---|---|
+| `@AutoShip how does auth work in acme/webapp?` | Clones/refreshes the repo, reads the codebase index + relevant files, answers in-thread with file citations |
+| `@AutoShip debug: <stack trace or incident>` | Root-cause analysis against the code, dependency blast radius, suggested fix, and a one-click **Create fix task** button |
+| `@AutoShip review this spec: …` | Structured design review — gaps, risks, edge cases, questions for the author |
+| `@AutoShip review acme/webapp#123` | Runs an in-depth AI review and posts it on the PR |
+| `@AutoShip add rate limiting to acme/api` | Existing task intake: draft → Create & Run → implementation → PR |
+| `@AutoShip help` | Capability card |
+
+Mention the bot again in the same thread to continue the conversation — it
+remembers context per thread (`assistant_threads`). Every interaction is
+audited in `assistant_interactions` and exposed at `GET /api/assistant/interactions`.
+
+Enable with `SLACK_ASSISTANT_ENABLED=true` (default on when Slack is
+configured). Set `ASSISTANT_DEFAULT_REPO` so bare questions have a codebase
+to answer from.
+
+## Review Every PR
+
+With `REVIEW_EVERY_PR_ENABLED=true`, every PR opened in a webhook-registered
+repo (including human-authored PRs) gets an in-depth AI review posted as a PR
+comment: verdict, 0–100 score, issues grouped by severity, and testing gaps.
+Reviews are deduped per head commit, skip drafts and bot authors by default,
+and are stored in `pr_agent_reviews` (`GET /api/pr-agent-reviews`). You can
+also trigger one on demand from Slack (`@AutoShip review org/repo#123`).
+
 ## Prerequisites
 
 - **Node.js 20+**
