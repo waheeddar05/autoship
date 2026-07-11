@@ -73,6 +73,18 @@ const diffPreviewAccuracy = new client.Histogram({
   buckets: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
 });
 
+const assistantRequestsTotal = new client.Counter({
+  name: "autoship_assistant_requests_total",
+  help: "Slack assistant requests by intent and result",
+  labelNames: ["intent", "result"],
+});
+
+const prAgentReviewsTotal = new client.Counter({
+  name: "autoship_pr_agent_reviews_total",
+  help: "PR agent reviews by result and verdict",
+  labelNames: ["result", "verdict"],
+});
+
 // ── Exported recording functions ────────────────────────────────
 
 export function recordTaskComplete(status, durationMs) {
@@ -128,6 +140,14 @@ export function recordDiffPreviewAccuracy(accuracy) {
   if (accuracy >= 0) {
     diffPreviewAccuracy.observe(accuracy);
   }
+}
+
+export function recordAssistantRequest(intent, success) {
+  assistantRequestsTotal.inc({ intent: intent || "unknown", result: success ? "success" : "failure" });
+}
+
+export function recordPrAgentReview(success, verdict) {
+  prAgentReviewsTotal.inc({ result: success ? "success" : "failure", verdict: verdict || "unknown" });
 }
 
 // ── Registry access for /metrics endpoint ───────────────────────

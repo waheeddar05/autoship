@@ -587,6 +587,68 @@ const SCHEMA = {
     group: "slack",
   },
 
+  // ── Slack Assistant (Slash-style) ──────────────────────────
+  slackAssistantEnabled: {
+    envKey: "SLACK_ASSISTANT_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Slack Assistant",
+    description: "Route @mentions through the AI assistant (codebase Q&A, incident debugging, spec/PR reviews); build requests still go to task intake",
+    group: "slack",
+  },
+  assistantDefaultRepo: {
+    envKey: "ASSISTANT_DEFAULT_REPO",
+    default: "",
+    type: "text",
+    label: "Assistant Default Repo",
+    description: "org/repo the assistant answers about when a mention doesn't name one",
+    group: "slack",
+  },
+  assistantMaxContextTokens: {
+    envKey: "ASSISTANT_MAX_CONTEXT_TOKENS",
+    default: 6000,
+    type: "number",
+    label: "Assistant Context Budget",
+    description: "Token budget for codebase context injected into assistant answers",
+    group: "slack",
+    min: 1000,
+    max: 16000,
+  },
+
+  // ── Review Every PR ─────────────────────────────────────────
+  reviewEveryPrEnabled: {
+    envKey: "REVIEW_EVERY_PR_ENABLED",
+    default: false,
+    type: "boolean",
+    label: "Review Every PR",
+    description: "Post an in-depth AI review on every PR opened in webhook-registered repos (including human-authored PRs)",
+    group: "pr_review",
+  },
+  prReviewSkipDrafts: {
+    envKey: "PR_REVIEW_SKIP_DRAFTS",
+    default: true,
+    type: "boolean",
+    label: "Skip Draft PRs",
+    description: "Don't auto-review draft PRs (they're reviewed when marked ready)",
+    group: "pr_review",
+  },
+  prReviewOnSync: {
+    envKey: "PR_REVIEW_ON_SYNC",
+    default: false,
+    type: "boolean",
+    label: "Re-review On Push",
+    description: "Re-review a PR every time new commits are pushed to it",
+    group: "pr_review",
+  },
+  prReviewPostComment: {
+    envKey: "PR_REVIEW_POST_COMMENT",
+    default: true,
+    type: "boolean",
+    label: "Post Review Comment",
+    description: "Post the AI review as a PR comment (off = store in dashboard only)",
+    group: "pr_review",
+  },
+
   // ── GitHub Issues Task Source ──────────────────────────────
   githubIssuesEnabled: {
     envKey: "GITHUB_ISSUES_ENABLED",
