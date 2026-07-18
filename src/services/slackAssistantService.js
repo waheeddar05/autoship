@@ -19,6 +19,7 @@ import { reviewPullRequest } from "./prReviewService.js";
 import { indexRepository, getRelevantContext, getIndexSummary } from "../codebase-index.js";
 import { detectProjectType, generateContextPrompt } from "../project-context.js";
 import { buildCodebaseGraph, findAffectedModules } from "./codebaseGraphService.js";
+import { isRepoAllowed } from "./repoAllowlistService.js";
 import { recordAssistantRequest, recordTokenUsage, recordCost } from "../prometheus.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -398,10 +399,37 @@ async function buildAssistantRepoContext(repoFullName, question) {
  */
 async function resolveRepo(text, thread) {
   const explicit = extractExplicitRepo(text);
-  if (explicit) return explicit;
+  if (explicit) return { repoFullName: explicit, explicit: true };
   const bare = extractBareRepo(text);
-  if (bare && (await isKnownRepo(bare))) return bare;
-  return thread?.repo_full_name || config.get("assistantDefaultRepo") || null;
+  if (bare && (await isKnownRepo(bare))) return { repoFullName: bare, explicit: true };
+  return { repoFullName: thread?.repo_full_name || config.get("assistantDefaultRepo") || null, explicit: false };
+}
+
+/** A Slack-ready message explaining why a repo is out of scope. */
+function scopeDenialMessage(scope, repoFullName) {
+  const team = `${config.get("assistantTeamOrg")}/${config.get("assistantTeamSlug")}`;
+  if (scope.reason === "list_unavailable") {
+    return `⚠️ I couldn't load the *${team}* team's repo list${scope.error ? ` (${scope.error})` : ""}. Ask an admin to confirm the GitHub token has \`read:org\` scope and can see the team.`;
+  }
+  const sample = (scope.sample || []).length
+    ? `\nRepos I can work with include: ${scope.sample.map((r) => `\`${r}\``).join(", ")}${scope.sample.length >= 10 ? " …" : ""}`
+    : "";
+  return `🔒 I can only work with repositories in the *${team}* team, so I can't touch \`${repoFullName}\`.${sample}`;
+}
+
+/**
+ * Resolve the repo for a Q&A/debug turn AND enforce team scope.
+ * Returns { repoFullName, denial }. If the user *explicitly* named an
+ * out-of-team repo, `denial` is a message and `repoFullName` is null (hard
+ * block). If the repo only came from the thread/default and isn't allowed,
+ * we silently drop context (repoFullName null, no denial).
+ */
+async function resolveScopedRepo(text, thread) {
+  const { repoFullName, explicit } = await resolveRepo(text, thread);
+  if (!repoFullName) return { repoFullName: null, denial: null };
+  const scope = await isRepoAllowed(repoFullName);
+  if (scope.allowed) return { repoFullName, denial: null };
+  return { repoFullName: null, denial: explicit ? scopeDenialMessage(scope, repoFullName) : null };
 }
 
 function buildMessages(history, currentContent) {
@@ -422,7 +450,8 @@ const SLACK_STYLE = `Format the answer for Slack mrkdwn: *bold* for emphasis, _i
 // ── Intent handlers ─────────────────────────────────────────────
 
 async function answerQuestion({ text, thread }) {
-  const repoFullName = await resolveRepo(text, thread);
+  const { repoFullName, denial } = await resolveScopedRepo(text, thread);
+  if (denial) return { answer: denial, repoFullName: null, blocked: true, modelUsed: ASSISTANT_MODEL };
   const question = text.slice(0, MAX_INPUT_CHARS);
   const contextParts = [];
 
@@ -450,7 +479,8 @@ async function answerQuestion({ text, thread }) {
 }
 
 async function debugIncident({ text, thread }) {
-  const repoFullName = await resolveRepo(text, thread);
+  const { repoFullName, denial } = await resolveScopedRepo(text, thread);
+  if (denial) return { answer: denial, repoFullName: null, blocked: true, modelUsed: ASSISTANT_MODEL };
   const incident = text.slice(0, MAX_INPUT_CHARS);
   const contextParts = [];
   let blastRadius = [];
@@ -561,6 +591,12 @@ async function runPrReviewFromSlack({ text }) {
     return { answer: "I couldn't find a PR reference. Point me at one like `acme/webapp#123` or a GitHub PR URL.", repoFullName: null };
   }
 
+  // Team scope: only review PRs on the team's repos
+  const scope = await isRepoAllowed(prRef.repoFullName);
+  if (!scope.allowed) {
+    return { answer: scopeDenialMessage(scope, prRef.repoFullName), repoFullName: null, blocked: true };
+  }
+
   const result = await reviewPullRequest({
     repoFullName: prRef.repoFullName,
     prNumber: prRef.prNumber,
@@ -599,8 +635,9 @@ const HELP_TEXT = [
   "• *An error or stack trace* — `@AutoShip debug: <paste trace>` → root cause + suggested fix (+ one-click fix task)",
   "• *A spec to review* — `@AutoShip review this spec: …` → structured design feedback",
   "• *A PR to review* — `@AutoShip review acme/webapp#123` → in-depth review posted on the PR",
-  "• *Something to build* — `@AutoShip add rate limiting to acme/api` → task draft → I implement it and open a PR",
+  "• *Something to build* — `@AutoShip add rate limiting to acme/api` → task draft → a ClickUp task is created to track it → I implement it and open a PR",
   "",
+  "_I work only with your team's repositories, and every build I take on is tracked as a ClickUp task._",
   "_Mention me again in a thread to continue the conversation — I remember the context._",
 ].join("\n");
 
@@ -636,8 +673,19 @@ export async function handleAssistantMention(event) {
     }
 
     if (intent === "task") {
-      // Existing intake flow: draft → Create / Create & Run buttons → PR.
-      // Count success only after intake actually completes.
+      // Team scope: block implement requests that name an out-of-team repo
+      const referenced = extractExplicitRepo(text) || extractBareRepo(text);
+      if (referenced) {
+        const scope = await isRepoAllowed(referenced);
+        if (!scope.allowed) {
+          await slackApi("chat.postMessage", { channel, thread_ts: threadTs, text: scopeDenialMessage(scope, referenced) }).catch(() => {});
+          recordAssistantRequest("task", false);
+          return;
+        }
+      }
+      // Existing intake flow: draft → Create / Create & Run buttons → ClickUp
+      // task (in the configured folder) → PR. Count success only after intake
+      // actually completes.
       await handleAppMention(event);
       recordAssistantRequest("task", true);
       return;
@@ -729,9 +777,11 @@ export async function handleAssistantAction(actionId, value, userName, { channel
   const reply = (text, threadTs) =>
     slackApi("chat.postMessage", { channel, thread_ts: threadTs || messageTs, text }).catch(() => {});
 
-  const listId = config.get("slackIntakeListId");
+  // Assistant tasks land in the configured tracking folder's list
+  // (Create a Task module), falling back to the Slack intake list.
+  const listId = config.get("assistantTaskListId") || config.get("slackIntakeListId");
   if (!listId) {
-    await reply("⚙️ Set *Slack Intake List ID* in the AutoShip dashboard settings to create tasks from Slack.");
+    await reply("⚙️ Set *Assistant Task List ID* (or *Slack Intake List ID*) in the AutoShip dashboard settings to create tasks from Slack.");
     return;
   }
 

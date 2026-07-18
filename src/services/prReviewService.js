@@ -8,6 +8,7 @@ import { pool } from "../db.js";
 import { logger } from "../logger.js";
 import { config } from "../config-manager.js";
 import { providerRegistry } from "../providers/provider-registry.js";
+import { isRepoAllowed } from "./repoAllowlistService.js";
 import { recordPrAgentReview } from "../prometheus.js";
 import { recordTokenUsage, recordCost } from "../prometheus.js";
 
@@ -143,6 +144,13 @@ export function formatReviewComment(review, { modelUsed } = {}) {
 export async function reviewPullRequest({ repoFullName, prNumber, prTitle, prBody, prAuthor, headSha, baseBranch, headBranch, triggerSource = "webhook" }) {
   const startedAt = Date.now();
   let reviewRowId = null;
+
+  // Team scope: only review PRs on repos in the configured GitHub team.
+  const scope = await isRepoAllowed(repoFullName);
+  if (!scope.allowed) {
+    logger.info({ repoFullName, prNumber, reason: scope.reason }, "[PR-AGENT-REVIEW] ⏭️ SKIP: repo not in allowed team");
+    return { ok: false, skipped: true, reason: "repo_not_allowed", scope };
+  }
 
   // Fill in metadata when the caller (e.g. Slack) only has repo + number.
   // Fetching diff/metadata is prerequisite work — if it fails we can't review.
