@@ -38,6 +38,7 @@ import { startGitHubIssuesPoller } from "./sources/github-issues-source.js";
 import { handleAppMention, handleIntakeAction } from "./services/slackTaskIntakeService.js";
 import { handleAssistantMention, handleAssistantAction } from "./services/slackAssistantService.js";
 import { handlePrOpened } from "./services/prReviewService.js";
+import { refreshAllowlist } from "./services/repoAllowlistService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -958,6 +959,14 @@ async function start() {
 
   // Schedule weekly digest if enabled
   scheduleWeeklyDigest();
+
+  // Warm the team-repo allowlist so scope errors (e.g. missing read:org) show
+  // up at boot rather than on the first Slack mention.
+  if (config.get("slackAssistantEnabled") && config.get("assistantRepoScopeEnabled")) {
+    refreshAllowlist()
+      .then((r) => logger.info({ count: r.names?.length ?? 0, ok: r.ok }, "[REPO-SCOPE] Allowlist warmed at startup"))
+      .catch((err) => logger.warn({ err: err.message }, "[REPO-SCOPE] Allowlist warm-up failed (non-fatal)"));
+  }
 
   // Periodic stale-task cleanup: auto-fail tasks stuck in non-terminal states
   const staleIntervalMs = Number(process.env.STALE_CLEANUP_INTERVAL_MS) || 30 * 60 * 1000;

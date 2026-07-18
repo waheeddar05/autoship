@@ -40,6 +40,29 @@ Enable with `SLACK_ASSISTANT_ENABLED=true` (default on when Slack is
 configured). Set `ASSISTANT_DEFAULT_REPO` so bare questions have a codebase
 to answer from.
 
+### Team repo scope
+
+The assistant is scoped to a single GitHub **team's** repositories: it only
+answers questions, debugs, reviews, or implements for repos that belong to the
+configured team, and hard-rejects any Slack request naming a repo outside it.
+The team's repos are fetched live from the GitHub API and cached (10 min by
+default), so the allowlist automatically tracks repos added to or removed from
+the team — e.g.
+`https://github.com/orgs/sarasanalytics-com/teams/daton/repositories`.
+
+- `ASSISTANT_REPO_SCOPE_ENABLED=true` (default) — turn scoping on/off
+- `ASSISTANT_TEAM_ORG` / `ASSISTANT_TEAM_SLUG` — the team (default `sarasanalytics-com` / `daton`)
+- `ASSISTANT_ALLOWED_REPOS_STATIC` — extra always-allowed repos, and a fallback if `read:org` isn't available
+- Requires `GITHUB_TOKEN` to have **`read:org`** scope and visibility into the team. If the list can't be loaded and nothing is cached, requests are denied (fail-closed) with a clear message.
+
+### Tracking every build in ClickUp
+
+When you ask the assistant to build something, it creates a **ClickUp task**
+(via the same *Create a Task* module the dashboard uses) in your tracking
+folder, so all assistant-driven work is trackable. Point it at a specific list
+with `ASSISTANT_TASK_LIST_ID` (defaults to `SLACK_INTAKE_LIST_ID`). Debug
+analyses also offer a one-click **Create fix task** button into the same list.
+
 ## Review Every PR
 
 With `REVIEW_EVERY_PR_ENABLED=true`, every PR opened in a webhook-registered

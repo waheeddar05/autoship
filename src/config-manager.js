@@ -614,6 +614,48 @@ const SCHEMA = {
     min: 1000,
     max: 16000,
   },
+  assistantTaskListId: {
+    envKey: "ASSISTANT_TASK_LIST_ID",
+    default: "",
+    type: "text",
+    label: "Assistant Task List ID",
+    description: "ClickUp list (inside your tracking folder) where assistant-created tasks land. Empty = reuse the Slack Intake List ID.",
+    group: "slack",
+  },
+
+  // ── Assistant Repo Scope (team allowlist) ──────────────────
+  assistantRepoScopeEnabled: {
+    envKey: "ASSISTANT_REPO_SCOPE_ENABLED",
+    default: true,
+    type: "boolean",
+    label: "Restrict To Team Repos",
+    description: "Only let the Slack assistant answer/implement/review for repos in the configured GitHub team",
+    group: "slack",
+  },
+  assistantTeamOrg: {
+    envKey: "ASSISTANT_TEAM_ORG",
+    default: "sarasanalytics-com",
+    type: "text",
+    label: "Team Org",
+    description: "GitHub org that owns the team whose repos the assistant is scoped to",
+    group: "slack",
+  },
+  assistantTeamSlug: {
+    envKey: "ASSISTANT_TEAM_SLUG",
+    default: "daton",
+    type: "text",
+    label: "Team Slug",
+    description: "GitHub team slug (e.g. 'daton') whose repositories the assistant may work with",
+    group: "slack",
+  },
+  assistantAllowedReposStatic: {
+    envKey: "ASSISTANT_ALLOWED_REPOS_STATIC",
+    default: "",
+    type: "list",
+    label: "Extra Allowed Repos",
+    description: "Comma-separated org/repo entries always allowed in addition to the team (fallback if org:read scope is unavailable)",
+    group: "slack",
+  },
 
   // ── Review Every PR ─────────────────────────────────────────
   reviewEveryPrEnabled: {
