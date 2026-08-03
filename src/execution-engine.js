@@ -432,8 +432,11 @@ const TOOL_ACTIVITY_MAP = {
 
 function relPath(filePath, cwd) {
   if (!filePath) return "file";
-  if (cwd && filePath.startsWith(cwd)) {
-    return filePath.slice(cwd.length).replace(/^\/+/, "") || filePath;
+  if (cwd) {
+    // Match on the directory boundary so a sibling repo sharing a name
+    // prefix (web vs web-admin) isn't mangled into "-admin/…".
+    const prefix = cwd.endsWith("/") ? cwd : cwd + "/";
+    if (filePath.startsWith(prefix)) return filePath.slice(prefix.length) || filePath;
   }
   return filePath;
 }
@@ -1495,13 +1498,6 @@ export async function execute(taskRecord) {
         ].join("\n");
 
         await addExecutionLog(taskId, "info", "change_summary", summaryMsg);
-
-        repoChangeSummaries.push({
-          repo: currentRepo.fullName,
-          files: fileEntries.length,
-          insertions: Number(insertions),
-          deletions: Number(deletions),
-        });
       } catch (_) { /* non-fatal */ }
 
       // ── Multi-repo orchestration: capture changes for next repo ─────
@@ -1848,6 +1844,22 @@ export async function execute(taskRecord) {
           } catch (_) {}
         }
       }
+
+      // Capture this repo's change stats over the FULL branch diff — the
+      // implementation commit plus any build-fix/test-fix/screenshot commits —
+      // so the completion summary matches the PR it links to.
+      try {
+        const branchStat = await runCommand("git", ["diff", "--shortstat", `origin/${baseBranch}...HEAD`], repoPath);
+        const filesChanged = Number((branchStat.match(/(\d+) files? changed/) || [])[1] || 0);
+        if (filesChanged > 0) {
+          repoChangeSummaries.push({
+            repo: currentRepo.fullName,
+            files: filesChanged,
+            insertions: Number((branchStat.match(/(\d+) insertions?/) || [])[1] || 0),
+            deletions: Number((branchStat.match(/(\d+) deletions?/) || [])[1] || 0),
+          });
+        }
+      } catch (_) { /* non-fatal */ }
 
       // Switch back to base branch for this repo
       await safeCheckout(baseBranch, repoPath);

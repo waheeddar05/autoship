@@ -63,13 +63,27 @@ function toMrkdwn(text) {
 }
 
 /**
- * Trim text to maxChars at a line boundary where possible.
+ * Trim text to maxChars at a line boundary where possible, closing any
+ * code fence the cut left open so following lines don't render inside it.
  */
 function truncate(text, maxChars) {
   if (text.length <= maxChars) return text;
   const cut = text.slice(0, maxChars);
   const lastNewline = cut.lastIndexOf("\n");
-  return (lastNewline > maxChars * 0.5 ? cut.slice(0, lastNewline) : cut).trimEnd() + " …";
+  let result = (lastNewline > maxChars * 0.5 ? cut.slice(0, lastNewline) : cut).trimEnd() + " …";
+  const fences = (result.match(/```/g) || []).length;
+  if (fences % 2 === 1) result += "\n```";
+  return result;
+}
+
+/**
+ * Derive a plain-text fallback (used by notification previews) from mrkdwn.
+ */
+function toFallback(text) {
+  return String(text)
+    .replace(/<([^|>]+)\|([^>]+)>/g, "$2")
+    .replace(/[*_~`]/g, "")
+    .split("\n")[0];
 }
 
 // ── Event → message builder map ──
@@ -205,13 +219,13 @@ export async function notifySlack(event, data = {}) {
           fields: fields.map((f) => ({ type: "mrkdwn", text: `*${f.title}*\n${f.value}` })),
         });
       }
-      fallback = spec.title;
+      fallback = toFallback(spec.title);
     } else {
       // Compact update. Inside a thread the anchor card already identifies the
       // task; outside one, prefix the task name so the message stands alone.
       const text = threadTs || !data.taskName ? spec.text : `*${data.taskName}*\n${spec.text}`;
       blocks = [{ type: "section", text: { type: "mrkdwn", text } }];
-      fallback = spec.fallback || spec.text.split("\n")[0];
+      fallback = spec.fallback || toFallback(spec.text);
     }
 
     const attachment = { color: spec.color, blocks, fallback };
@@ -240,9 +254,12 @@ export async function notifySlack(event, data = {}) {
 
       const result = await resp.json();
 
-      // Only the anchor card starts a thread — compact updates that happen to
-      // arrive first (e.g. debate before execution) must not become the parent.
-      if (result.ok && spec.anchor && !threadTs && useThreading && result.ts) {
+      // The first successfully posted threaded message becomes the parent —
+      // usually the anchor card, but a compact update that arrives first
+      // (e.g. debate before execution) or a retry after a failed anchor post
+      // also qualifies. Compact messages posted without a thread carry the
+      // task-name prefix, so the parent stays identifiable either way.
+      if (result.ok && !threadTs && useThreading && result.ts) {
         await setSlackThreadTs(data.taskDbId, result.ts).catch(() => {});
       }
     } else if (SLACK_WEBHOOK_URL) {

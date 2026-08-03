@@ -275,7 +275,10 @@ function extractSummary(output) {
  * to a whole line.
  */
 export function extractActionSummary(output, maxChars = 1500) {
-  if (!output) return "";
+  // Runs can resolve with a non-string result shape (e.g. empty streaming
+  // output falls back to the whole { output, usage } object upstream) —
+  // never let "[object Object]" reach the summary.
+  if (!output || typeof output !== "string") return "";
   let text = String(output).trim();
   if (!text) return "";
   if (text.length > maxChars) {
