@@ -1,6 +1,9 @@
 // src/slack-notifier.js
-// Enhanced Slack notifications with thread-per-task, Block Kit formatting,
-// and lifecycle event coverage. Fire-and-forget (never throws).
+// Slack notifications with thread-per-task and readable, low-noise formatting.
+// The first message of a task posts one rich "anchor" card (task, repo,
+// assignees, ClickUp link) that starts the thread; every later lifecycle
+// event is a compact one-line reply so the thread reads as a timeline
+// instead of a stack of repeated cards. Fire-and-forget (never throws).
 
 import { logger } from "./logger.js";
 import { config } from "./config-manager.js";
@@ -20,7 +23,8 @@ const COLORS = {
 
 /**
  * Build common enrichment fields (assignees, triggered-by, ClickUp link).
- * These are appended to every event's fields array.
+ * Only shown on the anchor card — they never change mid-task, so repeating
+ * them on every update is pure noise.
  */
 function buildEnrichmentFields(d) {
   const extra = [];
@@ -47,120 +51,124 @@ function buildEnrichmentFields(d) {
   return extra;
 }
 
+/**
+ * Convert GitHub-flavored markdown (Claude's output) to Slack mrkdwn.
+ */
+function toMrkdwn(text) {
+  return String(text)
+    .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
+    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
+    .replace(/^(\s*)[-*]\s+/gm, "$1• ")
+    .trim();
+}
+
+/**
+ * Trim text to maxChars at a line boundary where possible.
+ */
+function truncate(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const cut = text.slice(0, maxChars);
+  const lastNewline = cut.lastIndexOf("\n");
+  return (lastNewline > maxChars * 0.5 ? cut.slice(0, lastNewline) : cut).trimEnd() + " …";
+}
+
 // ── Event → message builder map ──
+// The anchor builder (task_triggered) returns { anchor, color, title, fields }
+// and renders as a rich card. All others return { color, text } and render as
+// compact one-line thread replies.
 const EVENT_BUILDERS = {
+  // Thread parent: the one rich card that anchors a task's thread.
   task_triggered: (d) => ({
+    anchor: true,
     color: COLORS.info,
-    title: "🚀 Task Triggered",
+    title: `🚀 *${d.taskName || "Unknown task"}*`,
     fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      { title: "Task ID", value: `#${d.taskId || "?"}`, short: true },
       ...(d.repo ? [{ title: "Repo", value: d.repo, short: true }] : []),
       ...(d.complexity ? [{ title: "Complexity", value: d.complexity, short: true }] : []),
     ],
   }),
 
-  task_started: (d) => ({
+  planning_completed: (d) => ({
     color: COLORS.info,
-    title: "⚙️ Execution Started",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.repo ? [{ title: "Repo", value: d.repo, short: true }] : []),
-    ],
+    text: `📋 Planning complete${d.repo ? ` — \`${d.repo}\`` : ""}${d.duration ? ` (${formatDuration(d.duration)})` : ""}`,
   }),
 
   debate_completed: (d) => ({
     color: COLORS.success,
-    title: "🧠 Debate Completed",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      { title: "Rounds", value: String(d.rounds || 0), short: true },
-      ...(d.duration ? [{ title: "Duration", value: formatDuration(d.duration), short: true }] : []),
-    ],
+    text: `🧠 Debate complete — ${d.rounds || 0} round(s)${d.duration ? ` in ${formatDuration(d.duration)}` : ""}, plan ready for review`,
   }),
 
-  planning_completed: (d) => ({
-    color: COLORS.info,
-    title: "📋 Planning Completed",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.duration ? [{ title: "Duration", value: formatDuration(d.duration), short: true }] : []),
-    ],
+  complexity_scored: (d) => ({
+    color: COLORS.neutral,
+    text: `🧭 Complexity: ${d.level || "unknown"} (${d.score ?? "?"}/100)${d.estimatedFiles ? ` — est. ~${d.estimatedFiles} file(s)` : ""}`,
   }),
 
   implementation_started: (d) => ({
     color: COLORS.info,
-    title: "🔨 Implementation Started",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.repo ? [{ title: "Repo", value: d.repo, short: true }] : []),
-    ],
+    text: `🔨 Implementation started${d.repo ? ` — \`${d.repo}\`` : ""}`,
   }),
 
-  pr_created: (d) => ({
-    color: COLORS.success,
-    title: "✅ Pull Request Created",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      { title: "PR", value: d.prUrl ? `<${d.prUrl}|#${d.prNumber}>` : `#${d.prNumber}`, short: true },
-      ...(d.repo ? [{ title: "Repo", value: d.repo, short: true }] : []),
-    ],
-  }),
+  pr_created: (d) => {
+    const label = `${d.repo || "PR"}#${d.prNumber || "?"}`;
+    return {
+      color: COLORS.success,
+      text: `✅ Pull request ready: ${d.prUrl ? `<${d.prUrl}|${label}>` : label}`,
+    };
+  },
 
   validation_completed: (d) => ({
     color: COLORS.success,
-    title: "🔍 Validation Completed",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.duration ? [{ title: "Duration", value: formatDuration(d.duration), short: true }] : []),
-    ],
+    text: `🔍 Validation complete${d.duration ? ` (${formatDuration(d.duration)})` : ""}`,
   }),
 
-  task_completed: (d) => ({
-    color: COLORS.success,
-    title: "🎉 Task Completed",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.prUrl ? [{ title: "PR", value: `<${d.prUrl}|View PR>`, short: true }] : []),
-      ...(d.duration ? [{ title: "Duration", value: formatDuration(d.duration), short: true }] : []),
-    ],
+  task_no_changes: (d) => ({
+    color: COLORS.warning,
+    text: `⚠️ Finished without code changes — nothing to push${d.repo ? ` (\`${d.repo}\`)` : ""}`,
   }),
+
+  // Completion carries the summary of actions: what functionally changed
+  // (Claude's own summary) plus file/line stats and PR links.
+  task_completed: (d) => {
+    const lines = [`🎉 *Task completed*${d.duration ? ` in ${formatDuration(d.duration)}` : ""}`];
+
+    const stats = d.changeStats;
+    if (stats && stats.files > 0) {
+      const repoNote = stats.repos && stats.repos.length > 1 ? ` across ${stats.repos.length} repos` : "";
+      lines.push(`*What changed* — ${stats.files} file(s), +${stats.insertions} −${stats.deletions}${repoNote}`);
+    } else if (d.summary) {
+      lines.push("*What changed*");
+    }
+    if (d.summary) {
+      lines.push(truncate(toMrkdwn(d.summary), 1200));
+    }
+
+    const prUrls = d.prUrls || (d.prUrl ? [d.prUrl] : []);
+    if (prUrls.length > 0) {
+      lines.push(prUrls.map((url, i) => `→ <${url}|${prUrls.length > 1 ? `PR ${i + 1}` : "View PR"}>`).join("  "));
+    }
+
+    return { color: COLORS.success, text: lines.join("\n"), fallback: "🎉 Task completed" };
+  },
 
   task_failed: (d) => ({
     color: COLORS.error,
-    title: "❌ Task Failed",
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.error ? [{ title: "Error", value: d.error.substring(0, 200), short: false }] : []),
-      ...(d.repo ? [{ title: "Repo", value: d.repo, short: true }] : []),
-    ],
+    text: `❌ *Task failed*${d.failureStage ? ` at \`${d.failureStage}\`` : ""}\n\`\`\`${(d.error || "Unknown error").substring(0, 300)}\`\`\``,
+    fallback: "❌ Task failed",
   }),
 
   retry_attempt: (d) => ({
     color: COLORS.warning,
-    title: `🔄 Retry Attempt (${d.retryCount || "?"}/${d.maxRetries || "?"})`,
-    fields: [
-      { title: "Task", value: d.taskName || "Unknown", short: true },
-      ...(d.failureStage ? [{ title: "Failed At", value: d.failureStage, short: true }] : []),
-    ],
+    text: `🔄 Retrying (attempt ${d.retryCount || "?"}/${d.maxRetries || "?"})${d.failureStage ? ` after failure at \`${d.failureStage}\`` : ""}`,
   }),
 
   pr_review_started: (d) => ({
     color: COLORS.info,
-    title: "👀 PR Review Auto-Fix Started",
-    fields: [
-      { title: "PR", value: `#${d.prNumber}`, short: true },
-      { title: "Repo", value: d.repo || "", short: true },
-    ],
+    text: `👀 Review auto-fix started — ${d.repo || ""}#${d.prNumber}`,
   }),
 
   pr_review_completed: (d) => ({
     color: COLORS.success,
-    title: "✅ PR Review Fixes Pushed",
-    fields: [
-      { title: "PR", value: `#${d.prNumber}`, short: true },
-      { title: "Repo", value: d.repo || "", short: true },
-    ],
+    text: `✅ Review fixes pushed — ${d.repo || ""}#${d.prNumber}`,
   }),
 };
 
@@ -178,9 +186,7 @@ export async function notifySlack(event, data = {}) {
   if (!builder) return;
 
   try {
-    const { color, title, fields } = builder(data);
-    // Append enrichment fields (assignees, triggered-by, ClickUp link)
-    const enrichedFields = [...fields, ...buildEnrichmentFields(data)];
+    const spec = builder(data);
     const useThreading = config.get("slackThreadPerTask") && data.taskDbId;
     let threadTs = null;
 
@@ -188,31 +194,27 @@ export async function notifySlack(event, data = {}) {
       threadTs = await getSlackThreadTs(data.taskDbId).catch(() => null);
     }
 
-    // Build the payload
-    const attachment = {
-      color,
-      blocks: [
-        {
+    let blocks;
+    let fallback;
+    if (spec.anchor) {
+      const fields = [...(spec.fields || []), ...buildEnrichmentFields(data)].filter((f) => f && f.value);
+      blocks = [{ type: "section", text: { type: "mrkdwn", text: spec.title } }];
+      if (fields.length > 0) {
+        blocks.push({
           type: "section",
-          text: { type: "mrkdwn", text: `*${title}*` },
-        },
-        {
-          type: "section",
-          fields: enrichedFields.map(f => ({
-            type: "mrkdwn",
-            text: `*${f.title}*\n${f.value}`,
-          })),
-        },
-        {
-          type: "context",
-          elements: [
-            { type: "mrkdwn", text: `_${new Date().toISOString()}_` },
-          ],
-        },
-      ],
-      fallback: title,
-    };
+          fields: fields.map((f) => ({ type: "mrkdwn", text: `*${f.title}*\n${f.value}` })),
+        });
+      }
+      fallback = spec.title;
+    } else {
+      // Compact update. Inside a thread the anchor card already identifies the
+      // task; outside one, prefix the task name so the message stands alone.
+      const text = threadTs || !data.taskName ? spec.text : `*${data.taskName}*\n${spec.text}`;
+      blocks = [{ type: "section", text: { type: "mrkdwn", text } }];
+      fallback = spec.fallback || spec.text.split("\n")[0];
+    }
 
+    const attachment = { color: spec.color, blocks, fallback };
     const channelId = config.get("slackChannel") || process.env.SLACK_CHANNEL_ID;
 
     if (SLACK_BOT_TOKEN && channelId) {
@@ -238,8 +240,9 @@ export async function notifySlack(event, data = {}) {
 
       const result = await resp.json();
 
-      // Store thread_ts from first message for task threading
-      if (result.ok && !threadTs && useThreading && result.ts) {
+      // Only the anchor card starts a thread — compact updates that happen to
+      // arrive first (e.g. debate before execution) must not become the parent.
+      if (result.ok && spec.anchor && !threadTs && useThreading && result.ts) {
         await setSlackThreadTs(data.taskDbId, result.ts).catch(() => {});
       }
     } else if (SLACK_WEBHOOK_URL) {

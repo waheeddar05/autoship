@@ -266,3 +266,23 @@ function extractSummary(output) {
   const lines = output.trim().split("\n").filter(Boolean);
   return lines.slice(-20).join("\n").substring(0, 1200) || "See PR diff for changes.";
 }
+
+/**
+ * Extract the "summary of actions" from Claude Code's output — the final
+ * message where Claude describes what it changed and why. Used for the
+ * session log's action summary and the Slack completion message.
+ * Keeps the tail of the output (the summary always comes last), trimmed
+ * to a whole line.
+ */
+export function extractActionSummary(output, maxChars = 1500) {
+  if (!output) return "";
+  let text = String(output).trim();
+  if (!text) return "";
+  if (text.length > maxChars) {
+    text = text.slice(-maxChars);
+    const firstNewline = text.indexOf("\n");
+    if (firstNewline > -1 && firstNewline < 200) text = text.slice(firstNewline + 1);
+    text = "…\n" + text.trimStart();
+  }
+  return text;
+}

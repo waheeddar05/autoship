@@ -19,7 +19,7 @@ import { onPrCreated } from "./handlers/approvalHandler.js";
 import {
   formatBranchName, formatPrTitle, formatCommitMessage,
   buildPrBody, buildPrompt, buildIncrementalPrompt, buildPrReviewPrompt,
-  injectDebatePlan, generateRunId,
+  injectDebatePlan, generateRunId, extractActionSummary,
 } from "./format-helpers.js";
 import { getDebateSession, getDebateSessionByTaskId, setSlackThreadTs } from "./task-queue.js";
 import { recordTaskComplete, recordStepDuration, recordTokenUsage, recordCost, recordRetry, setActiveSessions as setPrometheusActiveSessions, setQueueSize } from "./prometheus.js";
@@ -408,18 +408,48 @@ function runCommand(cmd, args, cwd, { timeout = 60_000, env: extraEnv } = {}) {
 
 /**
  * Map Claude Code tool names to human-readable activity labels.
+ * Paths are shown relative to the repo root — the absolute container path
+ * is noise for anyone reading the session log.
  */
 const TOOL_ACTIVITY_MAP = {
-  Read: (input) => `📖 Reading ${input?.file_path || "file"}`,
-  Write: (input) => `📝 Writing ${input?.file_path || "file"}`,
-  Edit: (input) => `✏️ Editing ${input?.file_path || "file"}`,
-  MultiEdit: (input) => `✏️ Editing ${input?.file_path || "file"} (multi-edit)`,
-  Bash: (input) => `🖥️ Running: ${(input?.command || "").substring(0, 80)}`,
+  Read: (input, cwd) => `📖 Reading ${relPath(input?.file_path, cwd)}`,
+  Write: (input, cwd) => `📝 Writing ${relPath(input?.file_path, cwd)}`,
+  Edit: (input, cwd) => `✏️ Editing ${relPath(input?.file_path, cwd)}`,
+  MultiEdit: (input, cwd) => `✏️ Editing ${relPath(input?.file_path, cwd)} (multiple edits)`,
+  Bash: (input) => `🖥️ Running \`${(input?.command || "").replace(/\s+/g, " ").substring(0, 80)}\``,
   Glob: (input) => `🔍 Searching files: ${input?.pattern || ""}`,
   Grep: (input) => `🔍 Searching for: ${(input?.pattern || "").substring(0, 60)}`,
-  TodoWrite: () => `📋 Updating task list`,
+  TodoWrite: (input) => {
+    const todos = Array.isArray(input?.todos) ? input.todos : [];
+    if (todos.length === 0) return `📋 Updating task list`;
+    const done = todos.filter((t) => t.status === "completed").length;
+    const current = todos.find((t) => t.status === "in_progress");
+    const currentNote = current ? ` — now: ${String(current.content || "").substring(0, 80)}` : "";
+    return `📋 Progress: ${done}/${todos.length} steps done${currentNote}`;
+  },
   Agent: (input) => `🤖 Spawning sub-agent: ${(input?.prompt || "").substring(0, 60)}`,
 };
+
+function relPath(filePath, cwd) {
+  if (!filePath) return "file";
+  if (cwd && filePath.startsWith(cwd)) {
+    return filePath.slice(cwd.length).replace(/^\/+/, "") || filePath;
+  }
+  return filePath;
+}
+
+/**
+ * Condense an assistant text block into a single narration line — Claude
+ * explaining in its own words what it's doing and why. These make the
+ * session log read like Claude Code's output instead of a raw tool trace.
+ */
+function narrationLine(text) {
+  if (!text) return null;
+  const line = String(text).split("\n").map((l) => l.trim()).find((l) => l.length > 2);
+  if (!line) return null;
+  const clean = line.replace(/^#{1,6}\s+/, "").replace(/\*\*/g, "");
+  return clean.length > 180 ? clean.slice(0, 177) + "…" : clean;
+}
 
 // Live Claude Code child processes keyed by task DB id, so cancelExecution
 // can actually terminate the run instead of just forgetting the session.
@@ -507,6 +537,7 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId, budgetU
     let streamUsage = null;
     let streamOutputBytes = 0;
     let lineBuffer = "";
+    let lastNarration = "";
 
     // Live budget enforcement (streaming mode only): accumulate tokens from
     // per-message usage and kill the run when estimated spend crosses budget
@@ -559,14 +590,22 @@ function runClaudeCode(prompt, cwd, { modelOverride, onActivity, taskId, budgetU
               }
             }
 
-            // Extract tool_use events for real-time file activity
+            // Extract real-time activity: Claude's own narration (text blocks)
+            // plus tool use events. Narration explains the functional intent
+            // ("Adding validation to the login handler…"); tool lines show the
+            // mechanical action. Together they make the session log readable.
             if (event.type === "assistant" && event.message?.content) {
               for (const block of event.message.content) {
-                if (block.type === "tool_use") {
-                  const toolName = block.name;
-                  const activityFn = TOOL_ACTIVITY_MAP[toolName];
+                if (block.type === "text") {
+                  const line = narrationLine(block.text);
+                  if (line && line !== lastNarration) {
+                    lastNarration = line;
+                    try { onActivity(`💬 ${line}`); } catch (_) {}
+                  }
+                } else if (block.type === "tool_use") {
+                  const activityFn = TOOL_ACTIVITY_MAP[block.name];
                   if (activityFn) {
-                    try { onActivity(activityFn(block.input)); } catch (_) {}
+                    try { onActivity(activityFn(block.input, cwd)); } catch (_) {}
                   }
                 }
               }
@@ -803,10 +842,10 @@ export async function execute(taskRecord) {
     repo: taskRecord.repo_full_name || "resolving...",
     branch: taskRecord.branch_name || "resolving...",
   });
-  notifySlack("task_started", { taskName: taskRecord.name, repo: taskRecord.repo_full_name || "", ...slackCtx });
 
   try {
-    // Notify Slack — task triggered (with threading)
+    // Notify Slack — post the anchor card that starts this task's thread.
+    // Every later lifecycle event threads under it as a compact reply.
     await notifySlack("task_triggered", { taskName: taskRecord.name, taskId: taskRecord.clickup_task_id, taskDbId: taskId, repo: taskRecord.repo_full_name || "", ...slackCtx });
 
     // Step 0: Resolve repo + GitHub token
@@ -950,7 +989,7 @@ export async function execute(taskRecord) {
 
     // Complete planning step, start implementation
     await completeStep(taskId, "planning");
-    notifySlack("planning_completed", { taskName: taskRecord.name, taskDbId: taskId, ...slackCtx });
+    notifySlack("planning_completed", { taskName: taskRecord.name, taskDbId: taskId, repo: allRepoNames, duration: Date.now() - pipelineStart, ...slackCtx });
 
     // ── Feature 16: Complexity Scoring (uses primary repo) ─────
     const primaryRepoPath = repoPaths[primaryRepo.fullName];
@@ -986,15 +1025,18 @@ export async function execute(taskRecord) {
       logger.warn({ taskId, err: err.message }, "Complexity scoring failed (non-fatal)");
     }
 
-    // Notify Slack with complexity
-    notifySlack("task_triggered", {
-      taskName: taskRecord.name,
-      taskId: taskRecord.clickup_task_id,
-      taskDbId: taskId,
-      repo: allRepoNames,
-      complexity: complexityResult ? `${complexityResult.level} (${complexityResult.score})` : undefined,
-      ...slackCtx,
-    });
+    // Notify Slack with complexity (compact thread update — the anchor card
+    // was already posted at the start of the run)
+    if (complexityResult) {
+      notifySlack("complexity_scored", {
+        taskName: taskRecord.name,
+        taskDbId: taskId,
+        level: complexityResult.level,
+        score: complexityResult.score,
+        estimatedFiles: complexityResult.estimatedFiles,
+        ...slackCtx,
+      });
+    }
 
     // Step 5: Run Claude Code for EACH repo (with debate plan injection if available)
     await startStep(taskId, "implementation");
@@ -1052,6 +1094,10 @@ export async function execute(taskRecord) {
     const allPrUrls = [];
     const allPrNumbers = [];
     let lastClaudeOutput = "";
+
+    // Per-repo change stats ({ repo, files, insertions, deletions }) collected
+    // after each commit — feed the "What changed" summary on completion.
+    const repoChangeSummaries = [];
 
     // Multi-repo orchestration: track changes made in previous repos so the
     // next repo's Claude session understands what was already done and can
@@ -1411,6 +1457,7 @@ export async function execute(taskRecord) {
           await postTaskComment(taskRecord.clickup_task_id, `⚠️ No code changes were produced for this task.`).catch(() => {});
           await safeCheckout(baseBranch, repoPath);
           await completeTask(taskId, { prUrl: taskRecord.pr_url, prNumber: taskRecord.pr_number, branch: branchName, claudeOutput, duration });
+          notifySlack("task_no_changes", { taskName: taskRecord.name, taskDbId: taskId, repo: currentRepo.fullName, ...slackCtx });
           return { success: true, noChanges: true };
         }
         // Multi-repo: skip this repo but continue to next
@@ -1448,6 +1495,13 @@ export async function execute(taskRecord) {
         ].join("\n");
 
         await addExecutionLog(taskId, "info", "change_summary", summaryMsg);
+
+        repoChangeSummaries.push({
+          repo: currentRepo.fullName,
+          files: fileEntries.length,
+          insertions: Number(insertions),
+          deletions: Number(deletions),
+        });
       } catch (_) { /* non-fatal */ }
 
       // ── Multi-repo orchestration: capture changes for next repo ─────
@@ -1858,7 +1912,30 @@ export async function execute(taskRecord) {
     await completeStep(taskId, "completion");
     const prSummary = allPrUrls.length > 1 ? allPrUrls.join(", ") : prUrl;
     await addTaskMessage(taskId, "system", `${isIncremental ? "Incremental update" : "Implementation"} complete. PR(s): ${prSummary}`);
-    notifySlack("task_completed", { taskName: taskRecord.name, prUrl: prSummary, duration, taskDbId: taskId, ...slackCtx });
+
+    // Summary of actions — Claude's own account of the functional changes,
+    // written to the session log and posted to the Slack thread alongside
+    // the file/line stats so readers see what changed, not just that it did.
+    const actionSummary = extractActionSummary(lastClaudeOutput);
+    if (actionSummary) {
+      await addExecutionLog(taskId, "info", "action_summary", `📦 Summary of changes:\n${actionSummary}`).catch(() => {});
+    }
+    const changeStats = repoChangeSummaries.length > 0 ? {
+      files: repoChangeSummaries.reduce((n, r) => n + r.files, 0),
+      insertions: repoChangeSummaries.reduce((n, r) => n + r.insertions, 0),
+      deletions: repoChangeSummaries.reduce((n, r) => n + r.deletions, 0),
+      repos: repoChangeSummaries,
+    } : null;
+
+    notifySlack("task_completed", {
+      taskName: taskRecord.name,
+      prUrls: allPrUrls.length > 0 ? allPrUrls : (prUrl ? [prUrl] : []),
+      duration,
+      taskDbId: taskId,
+      summary: actionSummary,
+      changeStats,
+      ...slackCtx,
+    });
 
     metrics.taskCompleted({
       taskId: taskRecord.clickup_task_id,
@@ -1976,7 +2053,7 @@ export async function execute(taskRecord) {
       `❌ Implementation failed.\n\n**Error**: ${error.message}\n**Repo**: \`${taskRecord.repo_full_name || ""}\``
     ).catch(() => {});
 
-    notifySlack("task_failed", { taskName: taskRecord.name, error: error.message, repo: taskRecord.repo_full_name || "", taskDbId: taskId, ...slackCtx });
+    notifySlack("task_failed", { taskName: taskRecord.name, error: error.message, failureStage: lastStepName, repo: taskRecord.repo_full_name || "", taskDbId: taskId, ...slackCtx });
 
     // Auto-retry if configured
     const maxRetries = config.get("maxRetryAttempts") || 0;
